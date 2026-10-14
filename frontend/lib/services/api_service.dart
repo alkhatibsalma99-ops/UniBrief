@@ -1,11 +1,13 @@
 import 'dart:convert';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
 
 class ApiService {
   static const String baseUrl = 'http://127.0.0.1:8002';
 
   // =========================
-  // Register
+  // REGISTER
   // =========================
   static Future<dynamic> register(String email, String password) async {
     final response = await http.post(
@@ -22,7 +24,7 @@ class ApiService {
   }
 
   // =========================
-  // Login
+  // LOGIN
   // =========================
   static Future<String> login(String email, String password) async {
     final response = await http.post(
@@ -46,7 +48,7 @@ class ApiService {
   }
 
   // =========================
-  // Get current user
+  // GET CURRENT USER
   // =========================
   static Future<Map<String, dynamic>> getMe(String token) async {
     final response = await http.get(
@@ -62,7 +64,7 @@ class ApiService {
   }
 
   // =========================
-  // Get all projects
+  // GET PROJECTS
   // =========================
   static Future<List<dynamic>> getProjects(String token) async {
     final response = await http.get(
@@ -84,7 +86,7 @@ class ApiService {
   }
 
   // =========================
-  // Create project
+  // CREATE PROJECT
   // =========================
   static Future<Map<String, dynamic>> createProject(
     String token,
@@ -108,7 +110,7 @@ class ApiService {
   }
 
   // =========================
-  // Update project
+  // UPDATE PROJECT
   // =========================
   static Future<Map<String, dynamic>> updateProject(
     String token,
@@ -143,7 +145,7 @@ class ApiService {
   }
 
   // =========================
-  // Delete project
+  // DELETE PROJECT
   // =========================
   static Future<void> deleteProject(String token, int projectId) async {
     final response = await http.delete(
@@ -157,7 +159,44 @@ class ApiService {
   }
 
   // =========================
-  // Get project files
+  // UPLOAD PDF
+  // =========================
+  static Future<Map<String, dynamic>> uploadPdf(
+    String token,
+    int projectId,
+    PlatformFile file,
+  ) async {
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      throw Exception('Please select a PDF file');
+    }
+
+    // Read PDF using file_picker 13.1.0
+    final bytes = await file.readAsBytes();
+
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/projects/$projectId/files'),
+    );
+
+    request.headers['Authorization'] = 'Bearer $token';
+
+    request.files.add(
+      http.MultipartFile.fromBytes('file', bytes, filename: file.name),
+    );
+
+    final streamedResponse = await request.send();
+
+    final response = await http.Response.fromStream(streamedResponse);
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      return Map<String, dynamic>.from(jsonDecode(response.body));
+    }
+
+    throw Exception('PDF upload failed: ${response.body}');
+  }
+
+  // =========================
+  // GET PROJECT FILES
   // =========================
   static Future<List<dynamic>> getProjectFiles(
     String token,
@@ -176,7 +215,7 @@ class ApiService {
   }
 
   // =========================
-  // Get requirements
+  // GET REQUIREMENTS
   // =========================
   static Future<List<dynamic>> getRequirements(
     String token,
@@ -195,39 +234,7 @@ class ApiService {
   }
 
   // =========================
-  // Generate checklist
-  // =========================
-  static Future<dynamic> generateChecklist(String token, int projectId) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/projects/$projectId/checklist/generate'),
-      headers: {'Authorization': 'Bearer $token'},
-    );
-
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      return jsonDecode(response.body);
-    }
-
-    throw Exception('Failed to generate checklist: ${response.body}');
-  }
-
-  // =========================
-  // Get checklist
-  // =========================
-  static Future<List<dynamic>> getChecklist(String token, int projectId) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/projects/$projectId/checklist'),
-      headers: {'Authorization': 'Bearer $token'},
-    );
-
-    if (response.statusCode == 200) {
-      return List<dynamic>.from(jsonDecode(response.body));
-    }
-
-    throw Exception('Failed to load checklist: ${response.body}');
-  }
-
-  // =========================
-  // Analyze assignment file
+  // ANALYZE PDF WITH AI
   // =========================
   static Future<dynamic> analyzeFile(
     String token,
@@ -244,5 +251,37 @@ class ApiService {
     }
 
     throw Exception('AI analysis failed: ${response.body}');
+  }
+
+  // =========================
+  // GENERATE CHECKLIST
+  // =========================
+  static Future<dynamic> generateChecklist(String token, int projectId) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/projects/$projectId/checklist/generate'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      return jsonDecode(response.body);
+    }
+
+    throw Exception('Failed to generate checklist: ${response.body}');
+  }
+
+  // =========================
+  // GET CHECKLIST
+  // =========================
+  static Future<List<dynamic>> getChecklist(String token, int projectId) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/projects/$projectId/checklist'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+
+    if (response.statusCode == 200) {
+      return List<dynamic>.from(jsonDecode(response.body));
+    }
+
+    throw Exception('Failed to load checklist: ${response.body}');
   }
 }
