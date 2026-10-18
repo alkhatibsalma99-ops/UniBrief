@@ -26,3 +26,4 @@ frontend/.flutter-plugins-dependencies
 # OS
 .DS_Store
 Thumbs.db
+keys.txt

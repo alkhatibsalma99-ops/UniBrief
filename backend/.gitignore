@@ -1,0 +1,32 @@
+# Python environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Uploaded documents
+uploads/
+
+# Local cache and databases
+*.sqlite3
+*.sqlite3-*
+*.db
+
+# Editor and system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+uploads/
+*.sqlite3
+keys.txt
