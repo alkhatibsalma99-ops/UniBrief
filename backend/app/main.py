@@ -1,6 +1,7 @@
 
 import os
 import uuid
+from datetime import datetime, timezone
 from io import BytesIO
 
 from fastapi import (
@@ -12,6 +13,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from pypdf import PdfReader
@@ -23,6 +25,10 @@ from app.security import (
     verify_password,
     create_access_token,
     decode_access_token,
+    create_refresh_token,
+    hash_refresh_token,
+    get_refresh_token_expiry,
+    utc_now,
 )
 from app.ai_service import (
     extract_requirements_with_ai,
@@ -39,7 +45,7 @@ from app.r2_storage import (
 # CONFIGURATION
 # ==========================================
 
-MAX_PDF_SIZE = 20 * 1024 * 1024  # 20 MB
+MAX_PDF_SIZE = 20 * 1024 * 1024
 
 
 # ==========================================
@@ -63,7 +69,7 @@ def get_db():
 
 app = FastAPI(
     title="UniBrief API",
-    version="1.2.0",
+    version="1.3.0",
 )
 
 
@@ -197,8 +203,8 @@ def get_owned_project_file(
 
 def get_file_bytes(db_file):
     """
-    New files are stored in Cloudflare R2.
-    Old local files remain readable during migration.
+    New files use Cloudflare R2.
+    Older local files remain readable.
     """
 
     stored_path = db_file.file_path or ""
@@ -215,14 +221,15 @@ def get_file_bytes(db_file):
         try:
             return download_file_from_r2(object_key)
         except Exception as error:
-            print("R2 DOWNLOAD ERROR:", type(error).__name__)
-
+            print(
+                "R2 DOWNLOAD ERROR:",
+                type(error).__name__,
+            )
             raise HTTPException(
                 status_code=502,
                 detail="Could not retrieve file from storage",
             ) from error
 
-    # Compatibility with older local uploads.
     if not os.path.isfile(stored_path):
         raise HTTPException(
             status_code=404,
@@ -323,6 +330,43 @@ def register(
 
 
 # ==========================================
+# REFRESH TOKEN REQUEST
+# ==========================================
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(
+        min_length=1,
+        max_length=512,
+    )
+
+
+def normalize_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+
+    return value.astimezone(timezone.utc)
+
+
+def issue_refresh_token(
+    db: Session,
+    user_id: int,
+) -> str:
+    token = create_refresh_token()
+
+    db.add(
+        models.RefreshToken(
+            user_id=user_id,
+            token_hash=hash_refresh_token(token),
+            created_at=utc_now(),
+            expires_at=get_refresh_token_expiry(),
+            revoked=False,
+        )
+    )
+
+    return token
+
+
+# ==========================================
 # LOGIN
 # ==========================================
 
@@ -350,9 +394,122 @@ def login(
         {"sub": str(db_user.id)}
     )
 
+    refresh_token = issue_refresh_token(
+        db,
+        db_user.id,
+    )
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
     return {
         "access_token": access_token,
+        "refresh_token": refresh_token,
         "token_type": "bearer",
+    }
+
+
+# ==========================================
+# REFRESH TOKEN ROTATION
+# ==========================================
+
+@app.post("/refresh")
+def refresh_session(
+    request: RefreshTokenRequest,
+    db: Session = Depends(get_db),
+):
+    old_hash = hash_refresh_token(
+        request.refresh_token
+    )
+
+    stored_token = (
+        db.query(models.RefreshToken)
+        .filter(
+            models.RefreshToken.token_hash == old_hash
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if (
+        stored_token is None
+        or stored_token.revoked
+        or normalize_utc(stored_token.expires_at) <= utc_now()
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired refresh token",
+        )
+
+    user = (
+        db.query(models.User)
+        .filter(
+            models.User.id == stored_token.user_id
+        )
+        .first()
+    )
+
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="User not found",
+        )
+
+    stored_token.revoked = True
+
+    new_access_token = create_access_token(
+        {"sub": str(user.id)}
+    )
+
+    new_refresh_token = issue_refresh_token(
+        db,
+        user.id,
+    )
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
+        "token_type": "bearer",
+    }
+
+
+# ==========================================
+# LOGOUT
+# ==========================================
+
+@app.post("/logout")
+def logout_session(
+    request: RefreshTokenRequest,
+    db: Session = Depends(get_db),
+):
+    token_hash = hash_refresh_token(
+        request.refresh_token
+    )
+
+    stored_token = (
+        db.query(models.RefreshToken)
+        .filter(
+            models.RefreshToken.token_hash == token_hash
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if stored_token is not None:
+        stored_token.revoked = True
+        db.commit()
+
+    return {
+        "message": "Logged out successfully"
     }
 
 
@@ -410,7 +567,9 @@ def get_projects(
 ):
     return (
         db.query(models.Project)
-        .filter(models.Project.user_id == current_user.id)
+        .filter(
+            models.Project.user_id == current_user.id
+        )
         .all()
     )
 
@@ -427,7 +586,9 @@ def update_project(
     current_user: models.User = Depends(get_current_user),
 ):
     project = get_owned_project(
-        project_id, db, current_user
+        project_id,
+        db,
+        current_user,
     )
 
     if update.title is not None:
@@ -458,7 +619,9 @@ def delete_project(
     current_user: models.User = Depends(get_current_user),
 ):
     project = get_owned_project(
-        project_id, db, current_user
+        project_id,
+        db,
+        current_user,
     )
 
     db.delete(project)
@@ -479,7 +642,9 @@ def upload_file(
     current_user: models.User = Depends(get_current_user),
 ):
     get_owned_project(
-        project_id, db, current_user
+        project_id,
+        db,
+        current_user,
     )
 
     original_filename = os.path.basename(
@@ -493,7 +658,9 @@ def upload_file(
         )
 
     try:
-        file_bytes = file.file.read(MAX_PDF_SIZE + 1)
+        file_bytes = file.file.read(
+            MAX_PDF_SIZE + 1
+        )
     finally:
         file.file.close()
 
@@ -527,15 +694,16 @@ def upload_file(
             object_key=object_key,
         )
     except Exception as error:
-        print("R2 UPLOAD ERROR:", type(error).__name__)
+        print(
+            "R2 UPLOAD ERROR:",
+            type(error).__name__,
+        )
 
         raise HTTPException(
             status_code=502,
             detail="Could not upload file to storage",
         ) from error
 
-    # Store the R2 object key in the existing database
-    # column. No new database column is required.
     db_file = models.ProjectFile(
         project_id=project_id,
         filename=original_filename,
@@ -570,7 +738,9 @@ def get_project_files(
     current_user: models.User = Depends(get_current_user),
 ):
     get_owned_project(
-        project_id, db, current_user
+        project_id,
+        db,
+        current_user,
     )
 
     return (
@@ -594,7 +764,10 @@ def get_file_text(
     current_user: models.User = Depends(get_current_user),
 ):
     db_file = get_owned_project_file(
-        project_id, file_id, db, current_user
+        project_id,
+        file_id,
+        db,
+        current_user,
     )
 
     extracted_text = read_pdf_text(db_file)
@@ -620,7 +793,10 @@ def extract_requirements(
     current_user: models.User = Depends(get_current_user),
 ):
     db_file = get_owned_project_file(
-        project_id, file_id, db, current_user
+        project_id,
+        file_id,
+        db,
+        current_user,
     )
 
     extracted_text = read_pdf_text(db_file)
@@ -677,7 +853,10 @@ def analyze_file_with_ai(
     current_user: models.User = Depends(get_current_user),
 ):
     db_file = get_owned_project_file(
-        project_id, file_id, db, current_user
+        project_id,
+        file_id,
+        db,
+        current_user,
     )
 
     extracted_text = read_pdf_text(db_file)
@@ -693,7 +872,10 @@ def analyze_file_with_ai(
             extracted_text
         )
     except Exception as error:
-        print("AI ERROR:", type(error).__name__)
+        print(
+            "AI ERROR:",
+            type(error).__name__,
+        )
 
         raise HTTPException(
             status_code=500,
@@ -743,7 +925,9 @@ def get_project_requirements(
     current_user: models.User = Depends(get_current_user),
 ):
     get_owned_project(
-        project_id, db, current_user
+        project_id,
+        db,
+        current_user,
     )
 
     requirements = (
@@ -780,7 +964,9 @@ def generate_checklist(
     current_user: models.User = Depends(get_current_user),
 ):
     get_owned_project(
-        project_id, db, current_user
+        project_id,
+        db,
+        current_user,
     )
 
     requirements = (
@@ -853,7 +1039,9 @@ def get_checklist(
     current_user: models.User = Depends(get_current_user),
 ):
     get_owned_project(
-        project_id, db, current_user
+        project_id,
+        db,
+        current_user,
     )
 
     items = (
@@ -935,7 +1123,10 @@ def check_submission(
     current_user: models.User = Depends(get_current_user),
 ):
     db_file = get_owned_project_file(
-        project_id, file_id, db, current_user
+        project_id,
+        file_id,
+        db,
+        current_user,
     )
 
     submission_text = read_pdf_text(db_file)
@@ -1034,7 +1225,9 @@ def get_submission_results(
     current_user: models.User = Depends(get_current_user),
 ):
     get_owned_project(
-        project_id, db, current_user
+        project_id,
+        db,
+        current_user,
     )
 
     results = (
@@ -1072,11 +1265,16 @@ def get_submission_report(
     current_user: models.User = Depends(get_current_user),
 ):
     project = get_owned_project(
-        project_id, db, current_user
+        project_id,
+        db,
+        current_user,
     )
 
     submission_file = get_owned_project_file(
-        project_id, file_id, db, current_user
+        project_id,
+        file_id,
+        db,
+        current_user,
     )
 
     results = (
@@ -1097,17 +1295,20 @@ def get_submission_report(
     total = len(results)
 
     fulfilled = sum(
-        1 for result in results
+        1
+        for result in results
         if result.status == "fulfilled"
     )
 
     missing = sum(
-        1 for result in results
+        1
+        for result in results
         if result.status == "missing"
     )
 
     unclear = sum(
-        1 for result in results
+        1
+        for result in results
         if result.status == "unclear"
     )
 

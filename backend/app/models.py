@@ -1,3 +1,4 @@
+
 from datetime import datetime
 
 from sqlalchemy import (
@@ -6,6 +7,7 @@ from sqlalchemy import (
     String,
     ForeignKey,
     DateTime,
+    Boolean,
 )
 
 from sqlalchemy.orm import relationship
@@ -13,38 +15,52 @@ from sqlalchemy.orm import relationship
 from app.database import Base
 
 
+# ==========================================
+# USER
+# ==========================================
+
 class User(Base):
     __tablename__ = "users"
 
     id = Column(
         Integer,
         primary_key=True,
-        index=True
+        index=True,
     )
 
     name = Column(
         String(100),
-        nullable=False
+        nullable=False,
     )
 
     email = Column(
         String(255),
         unique=True,
         nullable=False,
-        index=True
+        index=True,
     )
 
     password_hash = Column(
         String(255),
-        nullable=False
+        nullable=False,
     )
 
     projects = relationship(
         "Project",
         back_populates="owner",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
+    refresh_tokens = relationship(
+        "RefreshToken",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+# ==========================================
+# PROJECT
+# ==========================================
 
 class Project(Base):
     __tablename__ = "projects"
@@ -52,46 +68,53 @@ class Project(Base):
     id = Column(
         Integer,
         primary_key=True,
-        index=True
+        index=True,
     )
 
     title = Column(
         String(200),
-        nullable=False
+        nullable=False,
     )
 
     description = Column(
         String(1000),
-        nullable=True
+        nullable=True,
     )
 
     user_id = Column(
         Integer,
         ForeignKey(
             "users.id",
-            ondelete="CASCADE"
+            ondelete="CASCADE",
         ),
-        nullable=False
+        nullable=False,
     )
 
     owner = relationship(
         "User",
-        back_populates="projects"
+        back_populates="projects",
     )
 
     files = relationship(
         "ProjectFile",
         back_populates="project",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
+
     requirements = relationship(
-    "Requirement",
-    cascade="all, delete-orphan"
+        "Requirement",
+        cascade="all, delete-orphan",
     )
+
     checklist_items = relationship(
-    "ChecklistItem",
-    cascade="all, delete-orphan"
+        "ChecklistItem",
+        cascade="all, delete-orphan",
     )
+
+
+# ==========================================
+# PROJECT FILE
+# ==========================================
 
 class ProjectFile(Base):
     __tablename__ = "project_files"
@@ -99,145 +122,238 @@ class ProjectFile(Base):
     id = Column(
         Integer,
         primary_key=True,
-        index=True
+        index=True,
     )
 
     project_id = Column(
         Integer,
         ForeignKey(
             "projects.id",
-            ondelete="CASCADE"
+            ondelete="CASCADE",
         ),
-        nullable=False
+        nullable=False,
     )
 
     filename = Column(
         String(255),
-        nullable=False
+        nullable=False,
     )
 
     file_path = Column(
         String(500),
-        nullable=False
+        nullable=False,
     )
 
     uploaded_at = Column(
         DateTime,
         default=datetime.utcnow,
-        nullable=False
+        nullable=False,
     )
 
     project = relationship(
         "Project",
-        back_populates="files"
+        back_populates="files",
     )
+
     requirements = relationship(
-    "Requirement",
-    cascade="all, delete-orphan"
+        "Requirement",
+        cascade="all, delete-orphan",
     )
+
+
+# ==========================================
+# REQUIREMENT
+# ==========================================
+
 class Requirement(Base):
     __tablename__ = "requirements"
 
     id = Column(
         Integer,
         primary_key=True,
-        index=True
+        index=True,
     )
 
     project_id = Column(
         Integer,
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False
+        ForeignKey(
+            "projects.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
     )
 
     file_id = Column(
         Integer,
-        ForeignKey("project_files.id", ondelete="CASCADE"),
-        nullable=False
+        ForeignKey(
+            "project_files.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
     )
 
     title = Column(
         String(255),
-        nullable=False
+        nullable=False,
     )
 
     description = Column(
         String(2000),
-        nullable=False
+        nullable=False,
     )
 
     priority = Column(
         String(20),
-        nullable=False
+        nullable=False,
     )
+
     checklist_items = relationship(
-    "ChecklistItem",
-    cascade="all, delete-orphan"
+        "ChecklistItem",
+        cascade="all, delete-orphan",
     )
+
+
+# ==========================================
+# CHECKLIST ITEM
+# ==========================================
+
 class ChecklistItem(Base):
     __tablename__ = "checklist_items"
 
     id = Column(
         Integer,
         primary_key=True,
-        index=True
+        index=True,
     )
 
     project_id = Column(
         Integer,
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False
+        ForeignKey(
+            "projects.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
     )
 
     requirement_id = Column(
         Integer,
-        ForeignKey("requirements.id", ondelete="CASCADE"),
-        nullable=False
+        ForeignKey(
+            "requirements.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
     )
 
     title = Column(
         String(255),
-        nullable=False
+        nullable=False,
     )
 
     completed = Column(
         Integer,
         default=0,
-        nullable=False
-    )  
+        nullable=False,
+    )
+
+
+# ==========================================
+# SUBMISSION RESULT
+# ==========================================
+
 class SubmissionResult(Base):
     __tablename__ = "submission_results"
 
     id = Column(
         Integer,
         primary_key=True,
-        index=True
+        index=True,
     )
 
     project_id = Column(
         Integer,
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False
+        ForeignKey(
+            "projects.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
     )
 
     file_id = Column(
         Integer,
-        ForeignKey("project_files.id", ondelete="CASCADE"),
-        nullable=False
+        ForeignKey(
+            "project_files.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
     )
 
     requirement_id = Column(
         Integer,
-        ForeignKey("requirements.id", ondelete="CASCADE"),
-        nullable=False
+        ForeignKey(
+            "requirements.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
     )
 
     status = Column(
         String(20),
-        nullable=False
+        nullable=False,
     )
 
     feedback = Column(
         String(2000),
-        nullable=False
-    )          
+        nullable=False,
+    )
+
+
+# ==========================================
+# REFRESH TOKEN
+# ==========================================
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
+
+    user_id = Column(
+        Integer,
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        index=True,
+    )
+
+    token_hash = Column(
+        String(64),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    expires_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    revoked = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
+    user = relationship(
+        "User",
+        back_populates="refresh_tokens",
+    )

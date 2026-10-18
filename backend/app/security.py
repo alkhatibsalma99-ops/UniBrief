@@ -1,5 +1,8 @@
 
 import os
+import secrets
+import hashlib
+
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -22,7 +25,12 @@ if not SECRET_KEY or len(SECRET_KEY) < 32:
     )
 
 ALGORITHM = "HS256"
+
+# Access Token: 60 minutes
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+# Refresh Token: 30 days
+REFRESH_TOKEN_EXPIRE_DAYS = 30
 
 
 # ==========================================
@@ -47,7 +55,7 @@ def verify_password(
 
 
 # ==========================================
-# JWT TOKEN CREATION
+# ACCESS TOKEN CREATION
 # ==========================================
 
 def create_access_token(data: dict) -> str:
@@ -69,7 +77,7 @@ def create_access_token(data: dict) -> str:
 
 
 # ==========================================
-# JWT TOKEN VALIDATION
+# ACCESS TOKEN VALIDATION
 # ==========================================
 
 def decode_access_token(token: str):
@@ -84,3 +92,51 @@ def decode_access_token(token: str):
 
     except JWTError:
         return None
+
+
+# ==========================================
+# REFRESH TOKEN CREATION
+# ==========================================
+
+def create_refresh_token() -> str:
+    """
+    Generate a cryptographically secure
+    random refresh token.
+    """
+    return secrets.token_urlsafe(48)
+
+
+# ==========================================
+# REFRESH TOKEN HASHING
+# ==========================================
+
+def hash_refresh_token(token: str) -> str:
+    """
+    Hash the refresh token before storing
+    it in the database.
+    """
+    return hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest()
+
+
+# ==========================================
+# REFRESH TOKEN EXPIRATION
+# ==========================================
+
+def get_refresh_token_expiry() -> datetime:
+    """
+    Return the expiration time
+    of a new refresh token.
+    """
+    return datetime.now(timezone.utc) + timedelta(
+        days=REFRESH_TOKEN_EXPIRE_DAYS
+    )
+
+
+# ==========================================
+# CURRENT UTC TIME
+# ==========================================
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
