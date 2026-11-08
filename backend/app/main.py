@@ -41,16 +41,28 @@ from app.r2_storage import (
 )
 
 
-# ==========================================
+# ==================================================
 # CONFIGURATION
-# ==========================================
+# ==================================================
 
 MAX_PDF_SIZE = 20 * 1024 * 1024
 
+DEFAULT_CORS_ORIGINS = [
+    "https://late-king-42e3.alkhatibsalma99.workers.dev",
+]
 
-# ==========================================
+ADDITIONAL_CORS_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS", ""
+    ).split(",")
+    if origin.strip() and origin.strip() != "*"
+]
+
+
+# ==================================================
 # DATABASE
-# ==========================================
+# ==================================================
 
 Base.metadata.create_all(bind=engine)
 
@@ -63,52 +75,31 @@ def get_db():
         db.close()
 
 
-# ==========================================
+# ==================================================
 # FASTAPI
-# ==========================================
+# ==================================================
 
 app = FastAPI(
     title="UniBrief API",
-    version="1.3.0",
+    version="1.3.1",
 )
-
-
-# ==========================================
-# CORS
-# ==========================================
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "https://late-king-42e3.alkhatibsalma99.workers.dev",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ==========================================
-# TRANSLATION
-# ==========================================
 
 app.include_router(translation_router)
 
-
-# ==========================================
-# AUTHENTICATION
-# ==========================================
-
 security = HTTPBearer()
 
+
+# ==================================================
+# AUTHENTICATION HELPERS
+# ==================================================
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db),
 ):
-    payload = decode_access_token(credentials.credentials)
+    payload = decode_access_token(
+        credentials.credentials
+    )
 
     if payload is None:
         raise HTTPException(
@@ -139,9 +130,9 @@ def get_current_user(
     return user
 
 
-# ==========================================
+# ==================================================
 # PROJECT OWNERSHIP
-# ==========================================
+# ==================================================
 
 def get_owned_project(
     project_id: int,
@@ -166,9 +157,9 @@ def get_owned_project(
     return project
 
 
-# ==========================================
+# ==================================================
 # FILE OWNERSHIP
-# ==========================================
+# ==================================================
 
 def get_owned_project_file(
     project_id: int,
@@ -176,7 +167,11 @@ def get_owned_project_file(
     db: Session,
     current_user: models.User,
 ):
-    get_owned_project(project_id, db, current_user)
+    get_owned_project(
+        project_id,
+        db,
+        current_user,
+    )
 
     db_file = (
         db.query(models.ProjectFile)
@@ -196,16 +191,11 @@ def get_owned_project_file(
     return db_file
 
 
-# ==========================================
-# STORAGE HELPERS
-# ==========================================
+# ==================================================
+# FILE STORAGE
+# ==================================================
 
 def get_file_bytes(db_file):
-    """
-    New files use Cloudflare R2.
-    Older local files remain readable.
-    """
-
     stored_path = db_file.file_path or ""
 
     if stored_path.startswith("r2://"):
@@ -245,6 +235,10 @@ def get_file_bytes(db_file):
         ) from error
 
 
+# ==================================================
+# PDF TEXT EXTRACTION
+# ==================================================
+
 def read_pdf_text(db_file):
     if not db_file.filename.lower().endswith(".pdf"):
         raise HTTPException(
@@ -260,24 +254,25 @@ def read_pdf_text(db_file):
 
         for page in reader.pages:
             page_text = page.extract_text()
-
             if page_text:
                 pages_text.append(page_text)
 
         return "\n".join(pages_text)
 
     except Exception as error:
-        print("PDF ERROR:", type(error).__name__)
-
+        print(
+            "PDF ERROR:",
+            type(error).__name__,
+        )
         raise HTTPException(
             status_code=422,
             detail="Could not extract text from PDF",
         ) from error
 
 
-# ==========================================
-# HEALTH
-# ==========================================
+# ==================================================
+# HEALTH CHECK
+# ==================================================
 
 @app.get("/health")
 def health():
@@ -290,9 +285,9 @@ def db_check(db: Session = Depends(get_db)):
     return {"database": "connected"}
 
 
-# ==========================================
+# ==================================================
 # REGISTER
-# ==========================================
+# ==================================================
 
 @app.post("/register")
 def register(
@@ -328,9 +323,9 @@ def register(
     }
 
 
-# ==========================================
-# REFRESH TOKEN REQUEST
-# ==========================================
+# ==================================================
+# REFRESH TOKEN HELPERS
+# ==================================================
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str = Field(
@@ -342,7 +337,6 @@ class RefreshTokenRequest(BaseModel):
 def normalize_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
-
     return value.astimezone(timezone.utc)
 
 
@@ -365,9 +359,9 @@ def issue_refresh_token(
     return token
 
 
-# ==========================================
+# ==================================================
 # LOGIN
-# ==========================================
+# ==================================================
 
 @app.post("/login")
 def login(
@@ -411,9 +405,9 @@ def login(
     }
 
 
-# ==========================================
-# REFRESH TOKEN ROTATION
-# ==========================================
+# ==================================================
+# REFRESH ACCESS TOKEN
+# ==================================================
 
 @app.post("/refresh")
 def refresh_session(
@@ -481,9 +475,9 @@ def refresh_session(
     }
 
 
-# ==========================================
+# ==================================================
 # LOGOUT
-# ==========================================
+# ==================================================
 
 @app.post("/logout")
 def logout_session(
@@ -512,9 +506,9 @@ def logout_session(
     }
 
 
-# ==========================================
+# ==================================================
 # CURRENT USER
-# ==========================================
+# ==================================================
 
 @app.get("/me")
 def get_me(
@@ -527,9 +521,9 @@ def get_me(
     }
 
 
-# ==========================================
+# ==================================================
 # CREATE PROJECT
-# ==========================================
+# ==================================================
 
 @app.post("/projects")
 def create_project(
@@ -555,9 +549,9 @@ def create_project(
     }
 
 
-# ==========================================
+# ==================================================
 # GET PROJECTS
-# ==========================================
+# ==================================================
 
 @app.get("/projects")
 def get_projects(
@@ -573,9 +567,9 @@ def get_projects(
     )
 
 
-# ==========================================
+# ==================================================
 # UPDATE PROJECT
-# ==========================================
+# ==================================================
 
 @app.patch("/projects/{project_id}")
 def update_project(
@@ -607,9 +601,9 @@ def update_project(
     }
 
 
-# ==========================================
+# ==================================================
 # DELETE PROJECT
-# ==========================================
+# ==================================================
 
 @app.delete("/projects/{project_id}")
 def delete_project(
@@ -629,9 +623,9 @@ def delete_project(
     return {"message": "Project deleted"}
 
 
-# ==========================================
+# ==================================================
 # UPLOAD PDF TO CLOUDFLARE R2
-# ==========================================
+# ==================================================
 
 @app.post("/projects/{project_id}/files")
 def upload_file(
@@ -726,9 +720,9 @@ def upload_file(
     }
 
 
-# ==========================================
+# ==================================================
 # GET PROJECT FILES
-# ==========================================
+# ==================================================
 
 @app.get("/projects/{project_id}/files")
 def get_project_files(
@@ -751,9 +745,9 @@ def get_project_files(
     )
 
 
-# ==========================================
+# ==================================================
 # EXTRACT PDF TEXT
-# ==========================================
+# ==================================================
 
 @app.get("/projects/{project_id}/files/{file_id}/text")
 def get_file_text(
@@ -778,9 +772,9 @@ def get_file_text(
     }
 
 
-# ==========================================
+# ==================================================
 # SIMPLE REQUIREMENTS EXTRACTION
-# ==========================================
+# ==================================================
 
 @app.get(
     "/projects/{project_id}/files/{file_id}/requirements"
@@ -838,9 +832,9 @@ def extract_requirements(
     }
 
 
-# ==========================================
+# ==================================================
 # AI ANALYZE FILE
-# ==========================================
+# ==================================================
 
 @app.post(
     "/projects/{project_id}/files/{file_id}/analyze"
@@ -913,9 +907,9 @@ def analyze_file_with_ai(
     }
 
 
-# ==========================================
+# ==================================================
 # GET SAVED REQUIREMENTS
-# ==========================================
+# ==================================================
 
 @app.get("/projects/{project_id}/requirements")
 def get_project_requirements(
@@ -950,9 +944,9 @@ def get_project_requirements(
     ]
 
 
-# ==========================================
+# ==================================================
 # GENERATE CHECKLIST
-# ==========================================
+# ==================================================
 
 @app.post(
     "/projects/{project_id}/checklist/generate"
@@ -982,54 +976,66 @@ def generate_checklist(
             detail="No requirements found",
         )
 
-    checklist = []
+    existing_items = (
+        db.query(models.ChecklistItem)
+        .filter(
+            models.ChecklistItem.project_id == project_id,
+            models.ChecklistItem.requirement_id.in_(
+                [
+                    requirement.id
+                    for requirement in requirements
+                ]
+            ),
+        )
+        .all()
+    )
+
+    existing_by_requirement = {
+        item.requirement_id: item
+        for item in existing_items
+    }
+
+    ordered_items = []
+    new_items = []
 
     for requirement in requirements:
-        existing_item = (
-            db.query(models.ChecklistItem)
-            .filter(
-                models.ChecklistItem.requirement_id
-                == requirement.id
+        item = existing_by_requirement.get(
+            requirement.id
+        )
+
+        if item is None:
+            item = models.ChecklistItem(
+                project_id=project_id,
+                requirement_id=requirement.id,
+                title=requirement.title,
+                completed=0,
             )
-            .first()
-        )
+            new_items.append(item)
 
-        if existing_item:
-            checklist.append({
-                "id": existing_item.id,
-                "project_id": existing_item.project_id,
-                "requirement_id": existing_item.requirement_id,
-                "title": existing_item.title,
-                "completed": bool(existing_item.completed),
-            })
-            continue
+        ordered_items.append(item)
 
-        item = models.ChecklistItem(
-            project_id=project_id,
-            requirement_id=requirement.id,
-            title=requirement.title,
-            completed=0,
-        )
-
-        db.add(item)
+    if new_items:
+        db.add_all(new_items)
         db.flush()
 
-        checklist.append({
+    checklist = [
+        {
             "id": item.id,
             "project_id": item.project_id,
             "requirement_id": item.requirement_id,
             "title": item.title,
             "completed": bool(item.completed),
-        })
+        }
+        for item in ordered_items
+    ]
 
     db.commit()
-
     return checklist
 
 
-# ==========================================
+# ==================================================
 # GET CHECKLIST
-# ==========================================
+# ==================================================
 
 @app.get("/projects/{project_id}/checklist")
 def get_checklist(
@@ -1063,9 +1069,9 @@ def get_checklist(
     ]
 
 
-# ==========================================
-# UPDATE CHECKLIST
-# ==========================================
+# ==================================================
+# UPDATE CHECKLIST ITEM
+# ==================================================
 
 @app.patch("/checklist/{item_id}")
 def update_checklist_item(
@@ -1108,9 +1114,9 @@ def update_checklist_item(
     }
 
 
-# ==========================================
-# SUBMISSION CHECK
-# ==========================================
+# ==================================================
+# CHECK SUBMISSION WITH AI
+# ==================================================
 
 @app.post(
     "/projects/{project_id}/submission/{file_id}/check"
@@ -1211,9 +1217,9 @@ def check_submission(
     }
 
 
-# ==========================================
+# ==================================================
 # GET SUBMISSION RESULTS
-# ==========================================
+# ==================================================
 
 @app.get(
     "/projects/{project_id}/submission-results"
@@ -1250,9 +1256,9 @@ def get_submission_results(
     ]
 
 
-# ==========================================
+# ==================================================
 # FINAL SUBMISSION REPORT
-# ==========================================
+# ==================================================
 
 @app.get(
     "/projects/{project_id}/submission/{file_id}/report"
@@ -1339,3 +1345,24 @@ def get_submission_report(
         },
         "details": details,
     }
+
+
+# ==================================================
+# GLOBAL CORS MIDDLEWARE
+# Keep this AFTER all routes.
+# ==================================================
+
+app = CORSMiddleware(
+    app=app,
+    allow_origins=(
+        DEFAULT_CORS_ORIGINS
+        + ADDITIONAL_CORS_ORIGINS
+    ),
+    allow_origin_regex=(
+        r"^https?://(?:localhost|127\.0\.0\.1)"
+        r"(?::\d+)?$"
+    ),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
