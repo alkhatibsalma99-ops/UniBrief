@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -14,6 +17,7 @@ from app import models
 from app.database import SessionLocal
 from app.security import decode_access_token
 from app.ai_service import translate_content_with_ai
+from app.ai_rate_limit import ai_request_slot
 
 
 router = APIRouter(tags=["AI Translation"])
@@ -37,6 +41,7 @@ class TranslationRequest(BaseModel):
 
 def get_db():
     db = SessionLocal()
+
     try:
         yield db
     finally:
@@ -149,7 +154,7 @@ def translate_project_content(
             detail="Project not found",
         )
 
-    # Limit request size and AI cost.
+    # Preserve existing request size limits.
     if any(
         len(value) > 4000
         for value in request.texts
@@ -206,22 +211,37 @@ def translate_project_content(
                 missing_texts.append(original_text)
                 missing_keys.append(key)
 
-        # Only send uncached texts to AI.
+        # Call AI only for uncached texts.
         if missing_texts:
             try:
-                new_translations = (
-                    translate_content_with_ai(
-                        texts=missing_texts,
-                        target_language=(
-                            request.target_language
-                        ),
+                # NEW: Protect translation AI calls.
+                #
+                # This shares the daily quota with:
+                # - AI Requirements
+                # - Submission Check
+                #
+                # Cached translations do not consume
+                # an additional AI request slot.
+                with ai_request_slot(current_user.id):
+                    new_translations = (
+                        translate_content_with_ai(
+                            texts=missing_texts,
+                            target_language=(
+                                request.target_language
+                            ),
+                        )
                     )
-                )
+
+            except HTTPException:
+                # Preserve 429 and Retry-After.
+                raise
+
             except Exception as error:
                 print(
                     "TRANSLATION ERROR:",
                     type(error).__name__,
                 )
+
                 raise HTTPException(
                     status_code=502,
                     detail="AI translation failed",
@@ -253,6 +273,7 @@ def translate_project_content(
 
             connection.commit()
 
+    # Preserve the existing response structure.
     return {
         "project_id": project_id,
         "target_language": request.target_language,

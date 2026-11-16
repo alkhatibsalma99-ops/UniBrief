@@ -4,20 +4,41 @@ import '../services/api_service.dart';
 import 'dashboard_screen.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  final String selectedLanguage;
+  final ValueChanged<String> onLanguageChanged;
+
+  const LoginScreen({
+    super.key,
+    required this.selectedLanguage,
+    required this.onLanguageChanged,
+  });
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _formKey = GlobalKey<FormState>();
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
 
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
+  final TextEditingController _emailController = TextEditingController();
+
+  final TextEditingController _passwordController = TextEditingController();
 
   bool _isLoading = false;
   bool _obscurePassword = true;
+
+  String t(String en, String de, String ar) {
+    final language = Localizations.localeOf(context).languageCode;
+
+    switch (language) {
+      case 'de':
+        return de;
+      case 'ar':
+        return ar;
+      default:
+        return en;
+    }
+  }
 
   @override
   void dispose() {
@@ -27,6 +48,8 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _login() async {
+    if (_isLoading) return;
+
     if (!_formKey.currentState!.validate()) {
       return;
     }
@@ -36,31 +59,45 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final token = await ApiService.login(
+      final dynamic response = await ApiService.login(
         _emailController.text.trim(),
         _passwordController.text,
       );
 
+      if (response is! Map) {
+        throw Exception('Invalid login response');
+      }
+
+      final dynamic accessToken = response['access_token'];
+
+      if (accessToken is! String || accessToken.trim().isEmpty) {
+        throw Exception('Access token is missing or invalid');
+      }
+
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Login successful!'),
-          backgroundColor: Colors.green,
+      // Read the language before navigating.
+      final currentLanguage = Localizations.localeOf(context).languageCode;
+
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(
+          builder: (_) => DashboardScreen(
+            token: accessToken,
+            selectedLanguage: currentLanguage,
+            onLanguageChanged: widget.onLanguageChanged,
+          ),
         ),
       );
-
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => DashboardScreen(token: token)),
-      );
-    } catch (e) {
+    } catch (error) {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Login failed: $e'),
+          content: Text(
+            '${t("Login failed", "Anmeldung fehlgeschlagen", "فشل تسجيل الدخول")}: $error',
+          ),
           backgroundColor: Colors.red,
+          duration: const Duration(seconds: 5),
         ),
       );
     } finally {
@@ -76,24 +113,50 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF7F7FB),
+
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
+
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 420),
+
             child: Card(
               elevation: 6,
+
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(20),
               ),
+
               child: Padding(
                 padding: const EdgeInsets.all(30),
+
                 child: Form(
                   key: _formKey,
+
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
+
                     children: [
+                      Align(
+                        alignment: AlignmentDirectional.centerEnd,
+
+                        child: PopupMenuButton<String>(
+                          icon: const Icon(Icons.language),
+
+                          tooltip: t('Language', 'Sprache', 'اللغة'),
+
+                          onSelected: widget.onLanguageChanged,
+
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(value: 'en', child: Text('English')),
+                            PopupMenuItem(value: 'de', child: Text('Deutsch')),
+                            PopupMenuItem(value: 'ar', child: Text('العربية')),
+                          ],
+                        ),
+                      ),
+
                       const Icon(
                         Icons.school,
                         size: 65,
@@ -105,6 +168,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       const Text(
                         'UniBrief',
                         textAlign: TextAlign.center,
+
                         style: TextStyle(
                           fontSize: 30,
                           fontWeight: FontWeight.bold,
@@ -114,17 +178,30 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 8),
 
-                      const Text(
-                        'Your AI-powered study assistant',
+                      Text(
+                        t(
+                          'Your AI-powered study assistant',
+                          'Dein KI-Studienassistent',
+                          'مساعدك الدراسي بالذكاء الاصطناعي',
+                        ),
                         textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 14, color: Colors.grey),
+
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey,
+                        ),
                       ),
 
                       const SizedBox(height: 35),
 
-                      const Text(
-                        'Welcome Back!',
-                        style: TextStyle(
+                      Text(
+                        t(
+                          'Welcome Back!',
+                          'Willkommen zurück!',
+                          'أهلاً بعودتك!',
+                        ),
+
+                        style: const TextStyle(
                           fontSize: 22,
                           fontWeight: FontWeight.bold,
                         ),
@@ -132,33 +209,54 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 8),
 
-                      const Text(
-                        'Sign in to continue',
-                        style: TextStyle(color: Colors.grey),
+                      Text(
+                        t(
+                          'Sign in to continue',
+                          'Melde dich an, um fortzufahren',
+                          'سجّلي الدخول للمتابعة',
+                        ),
+
+                        style: const TextStyle(color: Colors.grey),
                       ),
 
                       const SizedBox(height: 25),
 
-                      // Email
                       TextFormField(
                         controller: _emailController,
+
                         keyboardType: TextInputType.emailAddress,
+
+                        textInputAction: TextInputAction.next,
+
                         decoration: InputDecoration(
-                          labelText: 'Email',
+                          labelText: t('Email', 'E-Mail', 'البريد الإلكتروني'),
+
                           prefixIcon: const Icon(Icons.email_outlined),
+
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
                         ),
+
                         validator: (value) {
                           if (value == null || value.trim().isEmpty) {
-                            return 'Please enter your email';
+                            return t(
+                              'Please enter your email',
+                              'Bitte E-Mail eingeben',
+                              'أدخلي البريد الإلكتروني',
+                            );
                           }
 
-                          if (!RegExp(
+                          final emailPattern = RegExp(
                             r'^[^@\s]+@[^@\s]+\.[^@\s]+$',
-                          ).hasMatch(value.trim())) {
-                            return 'Please enter a valid email';
+                          );
+
+                          if (!emailPattern.hasMatch(value.trim())) {
+                            return t(
+                              'Please enter a valid email',
+                              'Bitte gültige E-Mail eingeben',
+                              'أدخلي بريداً إلكترونياً صحيحاً',
+                            );
                           }
 
                           return null;
@@ -167,36 +265,48 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 20),
 
-                      // Password
                       TextFormField(
                         controller: _passwordController,
                         obscureText: _obscurePassword,
+
+                        textInputAction: TextInputAction.done,
+
                         decoration: InputDecoration(
-                          labelText: 'Password',
+                          labelText: t('Password', 'Passwort', 'كلمة المرور'),
+
                           prefixIcon: const Icon(Icons.lock_outline),
+
                           suffixIcon: IconButton(
                             icon: Icon(
                               _obscurePassword
                                   ? Icons.visibility_off
                                   : Icons.visibility,
                             ),
+
                             onPressed: () {
                               setState(() {
                                 _obscurePassword = !_obscurePassword;
                               });
                             },
                           ),
+
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
                         ),
+
                         validator: (value) {
                           if (value == null || value.isEmpty) {
-                            return 'Please enter your password';
+                            return t(
+                              'Please enter your password',
+                              'Bitte Passwort eingeben',
+                              'أدخلي كلمة المرور',
+                            );
                           }
 
                           return null;
                         },
+
                         onFieldSubmitted: (_) {
                           if (!_isLoading) {
                             _login();
@@ -206,30 +316,36 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 30),
 
-                      // Login button
                       SizedBox(
                         height: 50,
+
                         child: ElevatedButton(
                           onPressed: _isLoading ? null : _login,
+
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF6750A4),
+
                             foregroundColor: Colors.white,
+
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
                           ),
+
                           child: _isLoading
                               ? const SizedBox(
                                   width: 24,
                                   height: 24,
+
                                   child: CircularProgressIndicator(
                                     color: Colors.white,
                                     strokeWidth: 2,
                                   ),
                                 )
-                              : const Text(
-                                  'Login',
-                                  style: TextStyle(
+                              : Text(
+                                  t('Login', 'Anmelden', 'تسجيل الدخول'),
+
+                                  style: const TextStyle(
                                     fontSize: 17,
                                     fontWeight: FontWeight.bold,
                                   ),
@@ -239,11 +355,19 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 20),
 
-                      const Text(
-                        'Organize your projects. '
-                        'Track your progress.',
+                      Text(
+                        t(
+                          'Organize your projects. Track your progress.',
+                          'Organisiere Projekte und verfolge deinen Fortschritt.',
+                          'نظّمي مشاريعك وتابعي تقدّمك.',
+                        ),
+
                         textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 12, color: Colors.grey),
+
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
                       ),
                     ],
                   ),

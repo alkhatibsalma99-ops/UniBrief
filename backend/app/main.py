@@ -38,7 +38,21 @@ from app.translation_routes import router as translation_router
 from app.r2_storage import (
     upload_file_to_r2,
     download_file_from_r2,
+    delete_file_from_r2,
 )
+from fastapi import Request
+
+from app.login_rate_limit import (
+    initialize_login_rate_limit,
+    check_login_limit,
+    record_failed_login,
+    clear_login_attempts,
+)
+from app.ai_rate_limit import (
+    initialize_ai_rate_limit,
+    ai_request_slot,
+)
+
 
 
 # ==================================================
@@ -65,6 +79,8 @@ ADDITIONAL_CORS_ORIGINS = [
 # ==================================================
 
 Base.metadata.create_all(bind=engine)
+initialize_login_rate_limit(engine)
+initialize_ai_rate_limit(engine)
 
 
 def get_db():
@@ -363,46 +379,70 @@ def issue_refresh_token(
 # LOGIN
 # ==================================================
 
+
 @app.post("/login")
 def login(
     user: schemas.UserLogin,
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    db_user = (
-        db.query(models.User)
-        .filter(models.User.email == user.email)
-        .first()
-    )
-
-    if db_user is None or not verify_password(
-        user.password,
-        db_user.password_hash,
-    ):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid email or password",
-        )
-
-    access_token = create_access_token(
-        {"sub": str(db_user.id)}
-    )
-
-    refresh_token = issue_refresh_token(
+    rate_key = check_login_limit(
         db,
-        db_user.id,
+        request,
+        user.email,
     )
 
     try:
+        db_user = (
+            db.query(models.User)
+            .filter(
+                models.User.email == user.email
+            )
+            .first()
+        )
+
+        valid_password = (
+            db_user is not None
+            and verify_password(
+                user.password,
+                db_user.password_hash,
+            )
+        )
+
+        if not valid_password:
+            record_failed_login(db, rate_key)
+
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid email or password",
+            )
+
+        access_token = create_access_token(
+            {"sub": str(db_user.id)}
+        )
+
+        refresh_token = issue_refresh_token(
+            db,
+            db_user.id,
+        )
+
+        clear_login_attempts(db, rate_key)
+
         db.commit()
-    except Exception:
+
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+        }
+
+    except HTTPException:
         db.rollback()
         raise
 
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-    }
+    except Exception:
+        db.rollback()
+        raise
 
 
 # ==================================================
@@ -548,6 +588,155 @@ def create_project(
         "user_id": new_project.user_id,
     }
 
+# ==================================================
+# DELETE PROJECT PDF
+# ==================================================
+
+@app.delete("/projects/{project_id}/files/{file_id}")
+def delete_project_pdf(
+    project_id: int,
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    # Check project and file ownership.
+    db_file = get_owned_project_file(
+        project_id,
+        file_id,
+        db,
+        current_user,
+    )
+
+    stored_path = db_file.file_path or ""
+
+    # Validate the storage path before deletion.
+    if stored_path.startswith("r2://"):
+        object_key = stored_path[len("r2://"):]
+
+        expected_prefix = (
+            f"users/{current_user.id}/"
+            f"projects/{project_id}/"
+        )
+
+        if (
+            not object_key
+            or not object_key.startswith(expected_prefix)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid R2 file path",
+            )
+
+    else:
+        # Do not delete local files automatically.
+        # Local paths require separate safe-path validation.
+        raise HTTPException(
+            status_code=400,
+            detail="Only R2 files can be deleted",
+        )
+
+    # Lock the file row while preparing deletion.
+    db_file = (
+        db.query(models.ProjectFile)
+        .filter(
+            models.ProjectFile.id == file_id,
+            models.ProjectFile.project_id == project_id,
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if db_file is None:
+        raise HTTPException(
+            status_code=404,
+            detail="File not found",
+        )
+
+    try:
+        # Find requirements belonging to this PDF.
+        requirement_ids = [
+            requirement_id
+            for (requirement_id,) in (
+                db.query(models.Requirement.id)
+                .filter(
+                    models.Requirement.project_id == project_id,
+                    models.Requirement.file_id == file_id,
+                )
+                .all()
+            )
+        ]
+
+        # Delete submission results directly linked
+        # to the file or its requirements.
+        result_filter = (
+            models.SubmissionResult.file_id == file_id
+        )
+
+        if requirement_ids:
+            from sqlalchemy import or_
+
+            result_filter = or_(
+                models.SubmissionResult.file_id == file_id,
+                models.SubmissionResult.requirement_id.in_(
+                    requirement_ids
+                ),
+            )
+
+        db.query(models.SubmissionResult).filter(
+            models.SubmissionResult.project_id == project_id,
+            result_filter,
+        ).delete(synchronize_session=False)
+
+        # Remove checklist items for this PDF's requirements.
+        if requirement_ids:
+            db.query(models.ChecklistItem).filter(
+                models.ChecklistItem.project_id == project_id,
+                models.ChecklistItem.requirement_id.in_(
+                    requirement_ids
+                ),
+            ).delete(synchronize_session=False)
+
+        # Remove requirements extracted from this PDF.
+        db.query(models.Requirement).filter(
+            models.Requirement.project_id == project_id,
+            models.Requirement.file_id == file_id,
+        ).delete(synchronize_session=False)
+
+        # Delete the file's database record.
+        db.delete(db_file)
+
+        # Flush first to detect database constraint errors.
+        db.flush()
+
+        # Delete the actual object from R2.
+        # If R2 fails, the database transaction rolls back.
+        delete_file_from_r2(object_key)
+
+        db.commit()
+
+    except Exception as error:
+        db.rollback()
+
+        print(
+            "PDF DELETE ERROR:",
+            type(error).__name__,
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Could not complete PDF deletion. "
+                "Please check the server logs."
+            ),
+        ) from error
+
+    return {
+        "message": "PDF deleted successfully",
+        "file_id": file_id,
+        "project_id": project_id,
+    }
+
+
 
 # ==================================================
 # GET PROJECTS
@@ -601,8 +790,9 @@ def update_project(
     }
 
 
+
 # ==================================================
-# DELETE PROJECT
+# DELETE PROJECT + CLOUDFLARE R2 CLEANUP
 # ==================================================
 
 @app.delete("/projects/{project_id}")
@@ -611,114 +801,137 @@ def delete_project(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    # 1. Verify project ownership.
     project = get_owned_project(
         project_id,
         db,
         current_user,
     )
 
-    db.delete(project)
-    db.commit()
-
-    return {"message": "Project deleted"}
-
-
-# ==================================================
-# UPLOAD PDF TO CLOUDFLARE R2
-# ==================================================
-
-@app.post("/projects/{project_id}/files")
-def upload_file(
-    project_id: int,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    get_owned_project(
-        project_id,
-        db,
-        current_user,
-    )
-
-    original_filename = os.path.basename(
-        (file.filename or "file").replace("\\", "/")
-    )
-
-    if not original_filename.lower().endswith(".pdf"):
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF files are allowed",
+    # 2. Retrieve all files belonging to this project.
+    project_files = (
+        db.query(models.ProjectFile)
+        .filter(
+            models.ProjectFile.project_id == project_id
         )
+        .all()
+    )
 
+    # 3. Validate all storage paths before deleting.
+    storage_objects = []
+
+    uploads_directory = os.path.realpath(
+        os.path.join(os.getcwd(), "uploads")
+    )
+
+    for project_file in project_files:
+        stored_path = project_file.file_path or ""
+
+        if stored_path.startswith("r2://"):
+            object_key = stored_path[len("r2://"):]
+
+            if not object_key:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Invalid R2 object key",
+                )
+
+            storage_objects.append(
+                ("r2", object_key)
+            )
+
+        elif stored_path:
+            target_path = os.path.realpath(
+                stored_path
+            )
+
+            # Prevent deleting arbitrary local files.
+            try:
+                is_safe = (
+                    os.path.commonpath(
+                        [
+                            uploads_directory,
+                            target_path,
+                        ]
+                    )
+                    == uploads_directory
+                )
+            except ValueError:
+                is_safe = False
+
+            if not is_safe:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Unsafe local file path",
+                )
+
+            storage_objects.append(
+                ("local", target_path)
+            )
+
+    # 4. Delete physical files.
+    # If storage deletion fails, keep database records.
     try:
-        file_bytes = file.file.read(
-            MAX_PDF_SIZE + 1
-        )
-    finally:
-        file.file.close()
+        for storage_type, storage_path in storage_objects:
+            if storage_type == "r2":
+                delete_file_from_r2(storage_path)
 
-    if not file_bytes:
-        raise HTTPException(
-            status_code=400,
-            detail="File is empty",
-        )
+            elif storage_type == "local":
+                if os.path.isfile(storage_path):
+                    os.remove(storage_path)
 
-    if len(file_bytes) > MAX_PDF_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail="PDF exceeds 20 MB limit",
-        )
-
-    if not file_bytes.startswith(b"%PDF-"):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid PDF file",
-        )
-
-    object_key = (
-        f"users/{current_user.id}/"
-        f"projects/{project_id}/"
-        f"{uuid.uuid4()}.pdf"
-    )
-
-    try:
-        upload_file_to_r2(
-            file_bytes=file_bytes,
-            object_key=object_key,
-        )
     except Exception as error:
+        db.rollback()
+
         print(
-            "R2 UPLOAD ERROR:",
+            "PROJECT STORAGE CLEANUP ERROR:",
             type(error).__name__,
         )
 
         raise HTTPException(
             status_code=502,
-            detail="Could not upload file to storage",
+            detail=(
+                "Could not delete all project files "
+                "from storage"
+            ),
         ) from error
 
-    db_file = models.ProjectFile(
-        project_id=project_id,
-        filename=original_filename,
-        file_path=f"r2://{object_key}",
-    )
-
+    # 5. Delete project and related database records.
     try:
-        db.add(db_file)
+        # SubmissionResult has foreign keys to
+        # ProjectFile and Requirement.
+        # Delete these rows first to avoid FK errors.
+        db.query(models.SubmissionResult).filter(
+            models.SubmissionResult.project_id == project_id
+        ).delete(synchronize_session=False)
+
+        # Existing ORM cascades delete:
+        # - ProjectFile
+        # - Requirement
+        # - ChecklistItem
+        db.delete(project)
         db.commit()
-        db.refresh(db_file)
-    except Exception:
+
+    except Exception as error:
         db.rollback()
-        raise
+
+        print(
+            "PROJECT DATABASE DELETE ERROR:",
+            type(error).__name__,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Project files were removed from storage, "
+                "but database deletion failed"
+            ),
+        ) from error
 
     return {
-        "id": db_file.id,
-        "project_id": db_file.project_id,
-        "filename": db_file.filename,
-        "file_path": db_file.file_path,
-        "uploaded_at": db_file.uploaded_at,
+        "message": "Project deleted",
+        "deleted_files": len(project_files),
     }
-
 
 # ==================================================
 # GET PROJECT FILES
@@ -743,6 +956,139 @@ def get_project_files(
         )
         .all()
     )
+
+# ==================================================
+# DELETE PROJECT FILE
+# ==================================================
+
+#@app.delete("/projects/{project_id}/files/{file_id}")
+def delete_project_file(
+    project_id: int,
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    # Verify that the project and file belong to this user.
+    db_file = get_owned_project_file(
+        project_id,
+        file_id,
+        db,
+        current_user,
+    )
+
+    stored_path = db_file.file_path or ""
+
+    # Find requirements extracted from this file.
+    requirement_ids = [
+        row[0]
+        for row in (
+            db.query(models.Requirement.id)
+            .filter(
+                models.Requirement.project_id == project_id,
+                models.Requirement.file_id == file_id,
+            )
+            .all()
+        )
+    ]
+
+    try:
+        # Delete submission results linked directly
+        # to this file.
+        db.query(models.SubmissionResult).filter(
+            models.SubmissionResult.project_id == project_id,
+            models.SubmissionResult.file_id == file_id,
+        ).delete(synchronize_session=False)
+
+        if requirement_ids:
+            # Delete submission results linked to
+            # requirements extracted from this file,
+            # even when the submission is another PDF.
+            db.query(models.SubmissionResult).filter(
+                models.SubmissionResult.project_id == project_id,
+                models.SubmissionResult.requirement_id.in_(
+                    requirement_ids
+                ),
+            ).delete(synchronize_session=False)
+
+            # Delete checklist items for these requirements.
+            db.query(models.ChecklistItem).filter(
+                models.ChecklistItem.project_id == project_id,
+                models.ChecklistItem.requirement_id.in_(
+                    requirement_ids
+                ),
+            ).delete(synchronize_session=False)
+
+            # Delete only requirements from this file.
+            db.query(models.Requirement).filter(
+                models.Requirement.project_id == project_id,
+                models.Requirement.file_id == file_id,
+            ).delete(synchronize_session=False)
+
+        # Delete file metadata from the current transaction.
+        # Changes are not committed yet.
+        db.delete(db_file)
+        db.flush()
+
+        # Remove the physical file.
+        if stored_path.startswith("r2://"):
+            object_key = stored_path[len("r2://"):]
+
+            if not object_key:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Invalid R2 object key",
+                )
+
+            delete_file_from_r2(object_key)
+
+        elif stored_path:
+            # Legacy local files:
+            # only remove files inside the upload directory.
+            uploads_directory = os.path.realpath(
+                os.path.join(os.getcwd(), "uploads")
+            )
+
+            target_path = os.path.realpath(stored_path)
+
+            if os.path.commonpath(
+                [uploads_directory, target_path]
+            ) != uploads_directory:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Unsafe local file path",
+                )
+
+            if os.path.isfile(target_path):
+                os.remove(target_path)
+
+        # Commit database changes after storage deletion.
+        db.commit()
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception as error:
+        db.rollback()
+
+        print(
+            "FILE DELETE ERROR:",
+            type(error).__name__,
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail="Could not delete project file",
+        ) from error
+
+    return {
+        "message": "File deleted successfully",
+        "project_id": project_id,
+        "file_id": file_id,
+        "deleted_requirements": len(requirement_ids),
+    }
+
+
 
 
 # ==================================================
@@ -836,6 +1182,7 @@ def extract_requirements(
 # AI ANALYZE FILE
 # ==================================================
 
+
 @app.post(
     "/projects/{project_id}/files/{file_id}/analyze"
 )
@@ -860,10 +1207,17 @@ def analyze_file_with_ai(
             detail="No text could be extracted from PDF",
         )
 
+    # Protect only the expensive AI operation.
+    # Existing PDF extraction and database logic remain.
     try:
-        ai_result = extract_requirements_with_ai(
-            extracted_text
-        )
+        with ai_request_slot(current_user.id):
+            ai_result = extract_requirements_with_ai(
+                extracted_text
+            )
+
+    except HTTPException:
+        raise
+
     except Exception as error:
         print(
             "AI ERROR:",
@@ -1118,6 +1472,7 @@ def update_checklist_item(
 # CHECK SUBMISSION WITH AI
 # ==================================================
 
+
 @app.post(
     "/projects/{project_id}/submission/{file_id}/check"
 )
@@ -1166,11 +1521,17 @@ def check_submission(
         for requirement in requirements_db
     ]
 
+    # Both AI operations share the same daily limit.
     try:
-        result = check_submission_with_ai(
-            submission_text,
-            requirements,
-        )
+        with ai_request_slot(current_user.id):
+            result = check_submission_with_ai(
+                submission_text,
+                requirements,
+            )
+
+    except HTTPException:
+        raise
+
     except Exception as error:
         print(
             "SUBMISSION CHECK ERROR:",
@@ -1215,7 +1576,6 @@ def check_submission(
         "file_id": file_id,
         "results": saved_results,
     }
-
 
 # ==================================================
 # GET SUBMISSION RESULTS

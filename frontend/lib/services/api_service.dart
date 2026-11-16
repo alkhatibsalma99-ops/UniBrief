@@ -1,287 +1,754 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
-import 'package:file_picker/file_picker.dart';
+import 'package:file_picker/file_picker.dart' as picker;
 import 'package:http/http.dart' as http;
 
+import 'auth_storage.dart';
+
 class ApiService {
-  static const String baseUrl = 'http://127.0.0.1:8002';
+  // =====================================
+  // CONFIGURATION
+  // =====================================
 
-  // =========================
-  // REGISTER
-  // =========================
-  static Future<dynamic> register(String email, String password) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/register'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'email': email, 'password': password}),
-    );
+  static const String baseUrl = 'https://unibrief-1.onrender.com';
 
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      return jsonDecode(response.body);
-    }
+  static const Duration defaultTimeout = Duration(seconds: 45);
 
-    throw Exception('Registration failed: ${response.body}');
+  static const Duration aiTimeout = Duration(minutes: 3);
+
+  static const Duration uploadTimeout = Duration(minutes: 3);
+
+  static Future<String?>? _refreshInProgress;
+
+  // =====================================
+  // HEADERS
+  // =====================================
+
+  static Map<String, String> _headers(String token) {
+    return {
+      'Authorization': 'Bearer $token',
+      'Content-Type': 'application/json',
+    };
   }
 
-  // =========================
-  // LOGIN
-  // =========================
-  static Future<String> login(String email, String password) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/login'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'email': email, 'password': password}),
-    );
-
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      final token = data['access_token'];
-
-      if (token is String && token.isNotEmpty) {
-        return token;
-      }
-
-      throw Exception('No access token received');
-    }
-
-    throw Exception('Login failed: ${response.body}');
-  }
-
-  // =========================
-  // GET CURRENT USER
-  // =========================
-  static Future<Map<String, dynamic>> getMe(String token) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/me'),
-      headers: {'Authorization': 'Bearer $token'},
-    );
-
-    if (response.statusCode == 200) {
-      return Map<String, dynamic>.from(jsonDecode(response.body));
-    }
-
-    throw Exception('Failed to load user: ${response.body}');
-  }
-
-  // =========================
-  // GET PROJECTS
-  // =========================
-  static Future<List<dynamic>> getProjects(String token) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/projects'),
-      headers: {'Authorization': 'Bearer $token'},
-    );
-
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-
-      if (data is List) {
-        return data;
-      }
-
-      throw Exception('Unexpected projects response');
-    }
-
-    throw Exception('Failed to load projects: ${response.body}');
-  }
-
-  // =========================
-  // CREATE PROJECT
-  // =========================
-  static Future<Map<String, dynamic>> createProject(
-    String token,
-    String title, {
-    String description = '',
-  }) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/projects'),
-      headers: {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode({'title': title, 'description': description}),
-    );
-
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      return Map<String, dynamic>.from(jsonDecode(response.body));
-    }
-
-    throw Exception('Failed to create project: ${response.body}');
-  }
-
-  // =========================
-  // UPDATE PROJECT
-  // =========================
-  static Future<Map<String, dynamic>> updateProject(
-    String token,
-    int projectId, {
-    String? title,
-    String? description,
-  }) async {
-    final body = <String, dynamic>{};
-
-    if (title != null) {
-      body['title'] = title;
-    }
-
-    if (description != null) {
-      body['description'] = description;
-    }
-
-    final response = await http.patch(
-      Uri.parse('$baseUrl/projects/$projectId'),
-      headers: {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode(body),
-    );
-
-    if (response.statusCode == 200) {
-      return Map<String, dynamic>.from(jsonDecode(response.body));
-    }
-
-    throw Exception('Failed to update project: ${response.body}');
-  }
-
-  // =========================
-  // DELETE PROJECT
-  // =========================
-  static Future<void> deleteProject(String token, int projectId) async {
+  static Future<void> deletePdf(String token, int projectId, int fileId) async {
     final response = await http.delete(
-      Uri.parse('$baseUrl/projects/$projectId'),
-      headers: {'Authorization': 'Bearer $token'},
+      Uri.parse('$baseUrl/projects/$projectId/files/$fileId'),
+      headers: {'Authorization': 'Bearer $token', 'Accept': 'application/json'},
     );
 
-    if (response.statusCode != 200 && response.statusCode != 204) {
-      throw Exception('Failed to delete project: ${response.body}');
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+        'Failed to delete PDF: '
+        '${response.statusCode} ${response.body}',
+      );
     }
   }
 
-  // =========================
-  // UPLOAD PDF
-  // =========================
-  static Future<Map<String, dynamic>> uploadPdf(
+  // =====================================
+  // RESPONSE HELPERS
+  // =====================================
+
+  static dynamic _decode(http.Response response) {
+    dynamic data;
+
+    if (response.bodyBytes.isEmpty) {
+      data = null;
+    } else {
+      final body = utf8.decode(response.bodyBytes);
+
+      try {
+        data = jsonDecode(body);
+      } on FormatException {
+        data = body;
+      }
+    }
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('API error ${response.statusCode}: $data');
+    }
+
+    return data;
+  }
+
+  static List<dynamic> _asList(dynamic data) {
+    if (data is List) {
+      return List<dynamic>.from(data);
+    }
+
+    if (data is Map) {
+      for (final key in [
+        'items',
+        'results',
+        'files',
+        'projects',
+        'requirements',
+        'checklist',
+        'submission_results',
+        'details',
+      ]) {
+        if (data[key] is List) {
+          return List<dynamic>.from(data[key]);
+        }
+      }
+    }
+
+    if (data == null) return [];
+
+    throw Exception('Expected a list from server');
+  }
+
+  // =====================================
+  // TOKEN STORAGE
+  // =====================================
+
+  static Future<void> saveLoginTokens(dynamic response) async {
+    if (response is! Map) {
+      throw Exception('Invalid login response');
+    }
+
+    final accessToken = response['access_token'];
+    final refreshToken = response['refresh_token'];
+
+    if (accessToken is! String || accessToken.isEmpty) {
+      throw Exception('Access token is missing');
+    }
+
+    if (refreshToken is String && refreshToken.isNotEmpty) {
+      await AuthStorage.saveTokens(
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+      );
+    } else {
+      await AuthStorage.clearTokens();
+      await AuthStorage.saveToken(accessToken);
+    }
+  }
+
+  // =====================================
+  // REFRESH TOKEN
+  // =====================================
+
+  static Future<String?> refreshAccessToken() async {
+    final existing = _refreshInProgress;
+
+    if (existing != null) {
+      return existing;
+    }
+
+    final operation = _performTokenRefresh();
+    _refreshInProgress = operation;
+
+    try {
+      return await operation;
+    } finally {
+      if (identical(_refreshInProgress, operation)) {
+        _refreshInProgress = null;
+      }
+    }
+  }
+
+  static Future<String?> _performTokenRefresh() async {
+    final refreshToken = await AuthStorage.getRefreshToken();
+
+    if (refreshToken == null || refreshToken.isEmpty) {
+      return null;
+    }
+
+    final response = await http
+        .post(
+          Uri.parse('$baseUrl/refresh'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'refresh_token': refreshToken}),
+        )
+        .timeout(defaultTimeout);
+
+    if (response.statusCode == 401) {
+      await AuthStorage.clearTokens();
+      return null;
+    }
+
+    final data = _decode(response);
+
+    if (data is! Map) {
+      throw Exception('Invalid refresh response');
+    }
+
+    final accessToken = data['access_token'];
+    final newRefreshToken = data['refresh_token'];
+
+    if (accessToken is! String || accessToken.isEmpty) {
+      throw Exception('Invalid access token');
+    }
+
+    if (newRefreshToken is String && newRefreshToken.isNotEmpty) {
+      await AuthStorage.saveTokens(
+        accessToken: accessToken,
+        refreshToken: newRefreshToken,
+      );
+    } else {
+      await AuthStorage.saveToken(accessToken);
+    }
+
+    return accessToken;
+  }
+
+  // =====================================
+  // AUTHORIZED REQUESTS
+  // =====================================
+
+  static Future<http.Response> _authorizedRequest(
+    String token,
+    Future<http.Response> Function(String) send,
+  ) async {
+    final storedToken = await AuthStorage.getToken();
+
+    var activeToken = storedToken ?? token;
+
+    if (activeToken.isEmpty) {
+      final refreshed = await refreshAccessToken();
+
+      if (refreshed == null) {
+        throw Exception('Session expired. Log in again.');
+      }
+
+      activeToken = refreshed;
+    }
+
+    var response = await send(activeToken);
+
+    if (response.statusCode != 401) {
+      return response;
+    }
+
+    final latestToken = await AuthStorage.getToken();
+
+    if (latestToken != null &&
+        latestToken.isNotEmpty &&
+        latestToken != activeToken) {
+      response = await send(latestToken);
+
+      if (response.statusCode != 401) {
+        return response;
+      }
+    }
+
+    final refreshed = await refreshAccessToken();
+
+    if (refreshed == null) {
+      throw Exception('Session expired. Log in again.');
+    }
+
+    return send(refreshed);
+  }
+
+  // =====================================
+  // HTTP METHODS
+  // =====================================
+
+  static Future<http.Response> _get(
+    String path,
+    String token, {
+    Duration timeout = defaultTimeout,
+  }) {
+    return _authorizedRequest(
+      token,
+      (activeToken) => http
+          .get(Uri.parse('$baseUrl$path'), headers: _headers(activeToken))
+          .timeout(timeout),
+    );
+  }
+
+  static Future<http.Response> _post(
+    String path,
+    String token, {
+    Object? body,
+    Duration timeout = defaultTimeout,
+  }) {
+    return _authorizedRequest(
+      token,
+      (activeToken) => http
+          .post(
+            Uri.parse('$baseUrl$path'),
+            headers: _headers(activeToken),
+            body: body == null ? null : jsonEncode(body),
+          )
+          .timeout(timeout),
+    );
+  }
+
+  static Future<http.Response> _patch(
+    String path,
+    String token, {
+    Object? body,
+  }) {
+    return _authorizedRequest(
+      token,
+      (activeToken) => http
+          .patch(
+            Uri.parse('$baseUrl$path'),
+            headers: _headers(activeToken),
+            body: jsonEncode(body ?? {}),
+          )
+          .timeout(defaultTimeout),
+    );
+  }
+
+  static Future<http.Response> _delete(String path, String token) {
+    return _authorizedRequest(
+      token,
+      (activeToken) => http
+          .delete(Uri.parse('$baseUrl$path'), headers: _headers(activeToken))
+          .timeout(defaultTimeout),
+    );
+  }
+
+  static Future<List<dynamic>> _getList(
+    String path,
+    String token, {
+    bool forceRefresh = false,
+  }) async {
+    final response = await _get(path, token);
+    return _asList(_decode(response));
+  }
+
+  static void clearCache() {
+    // No local response cache.
+  }
+
+  static List<dynamic>? getCachedProjects(String token) {
+    return null;
+  }
+
+  // =====================================
+  // REGISTER
+  // =====================================
+
+  static Future<dynamic> register({
+    required String name,
+    required String email,
+    required String password,
+  }) async {
+    final response = await http
+        .post(
+          Uri.parse('$baseUrl/register'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'name': name,
+            'email': email,
+            'password': password,
+          }),
+        )
+        .timeout(defaultTimeout);
+
+    return _decode(response);
+  }
+
+  // =====================================
+  // LOGIN
+  // Returns Map with access_token
+  // =====================================
+
+  static Future<dynamic> login(String email, String password) async {
+    final response = await http
+        .post(
+          Uri.parse('$baseUrl/login'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'email': email, 'password': password}),
+        )
+        .timeout(defaultTimeout);
+
+    final data = _decode(response);
+
+    await saveLoginTokens(data);
+
+    return data;
+  }
+
+  // =====================================
+  // CURRENT USER
+  // =====================================
+
+  static Future<dynamic> getMe(String token) async {
+    final response = await _get('/me', token);
+    return _decode(response);
+  }
+
+  // =====================================
+  // LOGOUT
+  // =====================================
+
+  static Future<void> logout() async {
+    try {
+      await _refreshInProgress;
+    } catch (_) {
+      // Continue logout even if refresh failed.
+    }
+
+    final refreshToken = await AuthStorage.getRefreshToken();
+
+    try {
+      if (refreshToken != null && refreshToken.isNotEmpty) {
+        await http
+            .post(
+              Uri.parse('$baseUrl/logout'),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({'refresh_token': refreshToken}),
+            )
+            .timeout(defaultTimeout);
+      }
+    } finally {
+      await AuthStorage.clearTokens();
+      clearCache();
+    }
+  }
+
+  // =====================================
+  // PROJECTS
+  // =====================================
+
+  static Future<List<dynamic>> getProjects(
+    String token, {
+    bool forceRefresh = false,
+  }) {
+    return _getList('/projects', token, forceRefresh: forceRefresh);
+  }
+
+  static Future<dynamic> createProject(
+    String token,
+    String title, [
+    String description = '',
+  ]) async {
+    final response = await _post(
+      '/projects',
+      token,
+      body: {'title': title, 'description': description},
+    );
+
+    return _decode(response);
+  }
+
+  static Future<dynamic> updateProject(
     String token,
     int projectId,
-    PlatformFile file,
+    String title,
+    String description,
+  ) async {
+    final response = await _patch(
+      '/projects/$projectId',
+      token,
+      body: {'title': title, 'description': description},
+    );
+
+    return _decode(response);
+  }
+
+  static Future<dynamic> deleteProject(String token, int projectId) async {
+    final response = await _delete('/projects/$projectId', token);
+
+    return _decode(response);
+  }
+
+  // =====================================
+  // PROJECT FILES
+  // =====================================
+
+  static Future<List<dynamic>> getProjectFiles(
+    String token,
+    int projectId, {
+    bool forceRefresh = false,
+  }) {
+    return _getList(
+      '/projects/$projectId/files',
+      token,
+      forceRefresh: forceRefresh,
+    );
+  }
+
+  // =====================================
+  // UPLOAD PDF
+  // =====================================
+
+  static Future<dynamic> uploadPdf(
+    String token,
+    int projectId,
+    picker.PlatformFile file,
   ) async {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
       throw Exception('Please select a PDF file');
     }
 
-    // Read PDF using file_picker 13.1.0
     final bytes = await file.readAsBytes();
 
-    final request = http.MultipartRequest(
-      'POST',
-      Uri.parse('$baseUrl/projects/$projectId/files'),
-    );
+    Future<http.Response> sendUpload(String activeToken) async {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/projects/$projectId/files'),
+      );
 
-    request.headers['Authorization'] = 'Bearer $token';
+      request.headers['Authorization'] = 'Bearer $activeToken';
 
-    request.files.add(
-      http.MultipartFile.fromBytes('file', bytes, filename: file.name),
-    );
+      request.files.add(
+        http.MultipartFile.fromBytes('file', bytes, filename: file.name),
+      );
 
-    final streamedResponse = await request.send();
+      final streamedResponse = await http.Client()
+          .send(request)
+          .timeout(uploadTimeout);
 
-    final response = await http.Response.fromStream(streamedResponse);
-
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      return Map<String, dynamic>.from(jsonDecode(response.body));
+      return http.Response.fromStream(streamedResponse).timeout(uploadTimeout);
     }
 
-    throw Exception('PDF upload failed: ${response.body}');
+    final response = await _authorizedRequest(token, sendUpload);
+
+    return _decode(response);
   }
 
-  // =========================
-  // GET PROJECT FILES
-  // =========================
-  static Future<List<dynamic>> getProjectFiles(
+  // =====================================
+  // FILE TEXT
+  // =====================================
+
+  static Future<dynamic> getFileText(
     String token,
     int projectId,
+    int fileId,
   ) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/projects/$projectId/files'),
-      headers: {'Authorization': 'Bearer $token'},
+    final response = await _get(
+      '/projects/$projectId/files/$fileId/text',
+      token,
     );
 
-    if (response.statusCode == 200) {
-      return List<dynamic>.from(jsonDecode(response.body));
-    }
-
-    throw Exception('Failed to load files: ${response.body}');
+    return _decode(response);
   }
 
-  // =========================
-  // GET REQUIREMENTS
-  // =========================
-  static Future<List<dynamic>> getRequirements(
+  // =====================================
+  // EXTRACT REQUIREMENTS
+  // =====================================
+
+  static Future<dynamic> extractRequirements(
     String token,
     int projectId,
+    int fileId,
   ) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/projects/$projectId/requirements'),
-      headers: {'Authorization': 'Bearer $token'},
+    final response = await _get(
+      '/projects/$projectId/files/$fileId/requirements',
+      token,
+      timeout: aiTimeout,
     );
 
-    if (response.statusCode == 200) {
-      return List<dynamic>.from(jsonDecode(response.body));
-    }
-
-    throw Exception('Failed to load requirements: ${response.body}');
+    return _decode(response);
   }
 
-  // =========================
-  // ANALYZE PDF WITH AI
-  // =========================
+  // =====================================
+  // ANALYZE FILE WITH AI
+  // =====================================
+
   static Future<dynamic> analyzeFile(
     String token,
     int projectId,
     int fileId,
   ) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/projects/$projectId/files/$fileId/analyze'),
-      headers: {'Authorization': 'Bearer $token'},
+    final response = await _post(
+      '/projects/$projectId/files/$fileId/analyze',
+      token,
+      timeout: aiTimeout,
     );
 
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      return jsonDecode(response.body);
-    }
-
-    throw Exception('AI analysis failed: ${response.body}');
+    return _decode(response);
   }
 
-  // =========================
+  // =====================================
+  // GET REQUIREMENTS
+  // =====================================
+
+  static Future<List<dynamic>> getRequirements(
+    String token,
+    int projectId, {
+    bool forceRefresh = false,
+  }) {
+    return _getList(
+      '/projects/$projectId/requirements',
+      token,
+      forceRefresh: forceRefresh,
+    );
+  }
+
+  // =====================================
   // GENERATE CHECKLIST
-  // =========================
-  static Future<dynamic> generateChecklist(String token, int projectId) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/projects/$projectId/checklist/generate'),
-      headers: {'Authorization': 'Bearer $token'},
+  // =====================================
+
+  static Future<List<dynamic>> generateChecklist(
+    String token,
+    int projectId,
+  ) async {
+    final response = await _post(
+      '/projects/$projectId/checklist/generate',
+      token,
+      timeout: aiTimeout,
     );
 
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      return jsonDecode(response.body);
-    }
-
-    throw Exception('Failed to generate checklist: ${response.body}');
+    return _asList(_decode(response));
   }
 
-  // =========================
+  // =====================================
   // GET CHECKLIST
-  // =========================
-  static Future<List<dynamic>> getChecklist(String token, int projectId) async {
-    final response = await http.get(
-      Uri.parse('$baseUrl/projects/$projectId/checklist'),
-      headers: {'Authorization': 'Bearer $token'},
+  // =====================================
+
+  static Future<List<dynamic>> getChecklist(
+    String token,
+    int projectId, {
+    bool forceRefresh = false,
+  }) {
+    return _getList(
+      '/projects/$projectId/checklist',
+      token,
+      forceRefresh: forceRefresh,
+    );
+  }
+
+  // =====================================
+  // UPDATE CHECKLIST ITEM
+  // =====================================
+
+  static Future<dynamic> updateChecklistItem(
+    String token,
+    int itemId,
+    bool completed,
+  ) async {
+    final response = await _patch(
+      '/checklist/$itemId',
+      token,
+      body: {'completed': completed},
     );
 
-    if (response.statusCode == 200) {
-      return List<dynamic>.from(jsonDecode(response.body));
+    return _decode(response);
+  }
+
+  // =====================================
+  // CHECK SUBMISSION
+  // =====================================
+
+  static Future<dynamic> checkSubmission(
+    String token,
+    int projectId,
+    int fileId,
+  ) async {
+    final response = await _post(
+      '/projects/$projectId/submission/$fileId/check',
+      token,
+      timeout: aiTimeout,
+    );
+
+    return _decode(response);
+  }
+
+  // =====================================
+  // SUBMISSION RESULTS
+  // =====================================
+
+  static Future<List<dynamic>> getSubmissionResults(
+    String token,
+    int projectId, {
+    bool forceRefresh = false,
+  }) {
+    return _getList(
+      '/projects/$projectId/submission-results',
+      token,
+      forceRefresh: forceRefresh,
+    );
+  }
+
+  // =====================================
+  // FINAL REPORT
+  // =====================================
+
+  static Future<dynamic> getSubmissionReport(
+    String token,
+    int projectId,
+    int fileId,
+  ) async {
+    final response = await _get(
+      '/projects/$projectId/submission/$fileId/report',
+      token,
+      timeout: aiTimeout,
+    );
+
+    return _decode(response);
+  }
+
+  // =====================================
+  // AI TRANSLATION
+  // =====================================
+
+  static Future<List<String>> translateContent({
+    required String token,
+    required int projectId,
+    required String language,
+    required List<String> texts,
+  }) async {
+    if (!['en', 'de', 'ar'].contains(language)) {
+      throw ArgumentError('Unsupported language: $language');
     }
 
-    throw Exception('Failed to load checklist: ${response.body}');
+    if (texts.isEmpty) {
+      return [];
+    }
+
+    final translations = <String>[];
+    var start = 0;
+
+    while (start < texts.length) {
+      final batch = <String>[];
+      var characters = 0;
+
+      while (start < texts.length && batch.length < 30) {
+        final value = texts[start];
+
+        if (value.length > 4000) {
+          throw ArgumentError('Text exceeds 4000 characters');
+        }
+
+        if (batch.isNotEmpty && characters + value.length > 30000) {
+          break;
+        }
+
+        batch.add(value);
+        characters += value.length;
+        start++;
+      }
+
+      final response = await _post(
+        '/projects/$projectId/translate',
+        token,
+        body: {'target_language': language, 'texts': batch},
+        timeout: aiTimeout,
+      );
+
+      final data = _decode(response);
+
+      if (data is! Map) {
+        throw Exception('Invalid translation response');
+      }
+
+      final rawTranslations = data['translations'];
+
+      if (rawTranslations is! List) {
+        throw Exception('Translations list is missing');
+      }
+
+      final translatedBatch = rawTranslations
+          .map((value) => value.toString())
+          .toList();
+
+      if (translatedBatch.length != batch.length) {
+        throw Exception('Translation count mismatch');
+      }
+
+      translations.addAll(translatedBatch);
+    }
+
+    return translations;
   }
 }
