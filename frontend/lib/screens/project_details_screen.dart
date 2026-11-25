@@ -1229,6 +1229,28 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
 
                   const SizedBox(height: 12),
 
+                  OutlinedButton.icon(
+                    onPressed: isUploading || isCheckingSubmission
+                        ? null
+                        : uploadPdf,
+                    icon: const Icon(Icons.upload_file),
+                    label: Text(
+                      isUploading
+                          ? t(
+                              'Uploading...',
+                              'Wird hochgeladen...',
+                              'جارٍ رفع الملف...',
+                            )
+                          : t(
+                              'Upload submission PDF',
+                              'Abgabe-PDF hochladen',
+                              'رفع ملف التسليم PDF',
+                            ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 12),
+
                   fileSelector(
                     value: selectedSubmissionFileId,
                     onChanged: (id) {
