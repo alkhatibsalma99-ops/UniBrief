@@ -16,11 +16,14 @@ AI_DAILY_LIMIT = int(
 )
 
 # Maximum time reserved for one AI operation.
-# A crashed request will not block the user forever.
 AI_RESERVATION_MINUTES = int(
     os.getenv("AI_RESERVATION_MINUTES", "15")
 )
 
+
+# ==================================================
+# INITIALIZE AI RATE LIMIT
+# ==================================================
 
 def initialize_ai_rate_limit(engine):
     """
@@ -55,6 +58,10 @@ def _utc_now():
     return datetime.now(timezone.utc)
 
 
+# ==================================================
+# RESERVE AI REQUEST
+# ==================================================
+
 def _reserve_request(user_id: int) -> str:
     """
     Reserve one AI request for a user.
@@ -62,7 +69,7 @@ def _reserve_request(user_id: int) -> str:
     PostgreSQL advisory lock serializes reservations
     for the same user, even across server instances.
 
-    Both AI endpoints share the same daily quota.
+    All AI endpoints share the same daily quota.
     """
     request_id = str(uuid.uuid4())
     now = _utc_now()
@@ -80,6 +87,22 @@ def _reserve_request(user_id: int) -> str:
             """),
             {"user_id": int(user_id)},
         )
+
+        # Verify that the user account still exists.
+        existing_user = db.execute(
+            text("""
+                SELECT id
+                FROM users
+                WHERE id = :user_id
+            """),
+            {"user_id": user_id},
+        ).first()
+
+        if existing_user is None:
+            raise HTTPException(
+                status_code=401,
+                detail="User account no longer exists",
+            )
 
         # Remove an expired reservation.
         db.execute(
@@ -165,7 +188,9 @@ def _reserve_request(user_id: int) -> str:
 
             retry_after = max(
                 1,
-                int((next_day - now).total_seconds()) + 1,
+                int(
+                    (next_day - now).total_seconds()
+                ) + 1,
             )
 
             raise HTTPException(
@@ -228,6 +253,10 @@ def _reserve_request(user_id: int) -> str:
         db.close()
 
 
+# ==================================================
+# RELEASE AI REQUEST
+# ==================================================
+
 def _release_request(
     user_id: int,
     request_id: str,
@@ -262,6 +291,74 @@ def _release_request(
     finally:
         db.close()
 
+
+# ==================================================
+# DELETE USER AI DATA
+# ==================================================
+
+def delete_user_ai_data(db, user_id: int):
+    """
+    Delete AI usage records for one user.
+
+    Uses the existing account deletion transaction.
+    Does not commit or close the database session.
+    """
+
+    # Prevent new reservations during account deletion.
+    db.execute(
+        text("""
+            SELECT pg_advisory_xact_lock(
+                :user_id
+            )
+        """),
+        {"user_id": int(user_id)},
+    )
+
+    now = _utc_now()
+
+    active_request = db.execute(
+        text("""
+            SELECT request_id
+            FROM ai_active_requests
+            WHERE user_id = :user_id
+              AND expires_at > :now
+        """),
+        {
+            "user_id": user_id,
+            "now": now,
+        },
+    ).first()
+
+    if active_request is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "An AI request is currently running. "
+                "Please wait before deleting your account."
+            ),
+            headers={"Retry-After": "10"},
+        )
+
+    db.execute(
+        text("""
+            DELETE FROM ai_active_requests
+            WHERE user_id = :user_id
+        """),
+        {"user_id": user_id},
+    )
+
+    db.execute(
+        text("""
+            DELETE FROM ai_daily_usage
+            WHERE user_id = :user_id
+        """),
+        {"user_id": user_id},
+    )
+
+
+# ==================================================
+# AI REQUEST CONTEXT MANAGER
+# ==================================================
 
 @contextmanager
 def ai_request_slot(user_id: int):

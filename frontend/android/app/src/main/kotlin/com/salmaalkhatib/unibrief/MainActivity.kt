@@ -1,4 +1,5 @@
-package com.example.frontend
+
+package com.salmaalkhatib.unibrief
 
 import io.flutter.embedding.android.FlutterActivity
 

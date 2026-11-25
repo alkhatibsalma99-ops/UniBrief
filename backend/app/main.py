@@ -34,7 +34,11 @@ from app.ai_service import (
     extract_requirements_with_ai,
     check_submission_with_ai,
 )
-from app.translation_routes import router as translation_router
+from app.translation_routes import (
+    router as translation_router,
+    delete_user_translation_cache,
+    delete_project_translation_cache,
+)
 from app.r2_storage import (
     upload_file_to_r2,
     download_file_from_r2,
@@ -51,6 +55,7 @@ from app.login_rate_limit import (
 from app.ai_rate_limit import (
     initialize_ai_rate_limit,
     ai_request_slot,
+    delete_user_ai_data,
 )
 
 
@@ -889,29 +894,28 @@ def delete_project(
         )
 
         raise HTTPException(
-            status_code=502,
-            detail=(
+                  detail=(
                 "Could not delete all project files "
                 "from storage"
             ),
         ) from error
 
-    # 5. Delete project and related database records.
+
+      # 5. Delete project and related database records.
     try:
-        # SubmissionResult has foreign keys to
-        # ProjectFile and Requirement.
-        # Delete these rows first to avoid FK errors.
         db.query(models.SubmissionResult).filter(
             models.SubmissionResult.project_id == project_id
         ).delete(synchronize_session=False)
 
-        # Existing ORM cascades delete:
-        # - ProjectFile
-        # - Requirement
-        # - ChecklistItem
         db.delete(project)
-        db.commit()
+        db.flush()
 
+        delete_project_translation_cache(
+            current_user.id,
+            project_id,
+        )
+
+        db.commit()
     except Exception as error:
         db.rollback()
 
@@ -1704,6 +1708,289 @@ def get_submission_report(
             "completion_percentage": completion_percentage,
         },
         "details": details,
+    }
+    # ==================================================
+# DELETE USER ACCOUNT
+# ==================================================
+
+
+# ==================================================
+# DELETE USER ACCOUNT
+# ==================================================
+
+@app.delete("/me")
+def delete_account(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    user_id = current_user.id
+
+    try:
+        # Prevent new AI reservations during deletion.
+        # Reject deletion if an AI reservation is active.
+        delete_user_ai_data(db, user_id)
+
+        # Lock and verify the user account.
+        user = (
+            db.query(models.User)
+            .filter(models.User.id == user_id)
+            .with_for_update()
+            .first()
+        )
+
+        if user is None:
+            raise HTTPException(
+                status_code=401,
+                detail="User not found",
+            )
+
+        # Retrieve all projects owned by this user.
+        projects = (
+            db.query(models.Project)
+            .filter(
+                models.Project.user_id == user_id
+            )
+            .with_for_update()
+            .all()
+        )
+
+        project_ids = [
+            project.id for project in projects
+        ]
+
+        storage_objects = []
+
+        if project_ids:
+            project_files = (
+                db.query(models.ProjectFile)
+                .filter(
+                    models.ProjectFile.project_id.in_(
+                        project_ids
+                    )
+                )
+                .with_for_update()
+                .all()
+            )
+
+            # Validate every storage path before deletion.
+            for project_file in project_files:
+                stored_path = project_file.file_path or ""
+
+                if not stored_path.startswith("r2://"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Unsupported storage path",
+                    )
+
+                object_key = stored_path[len("r2://"):]
+
+                expected_prefix = (
+                    f"users/{user_id}/"
+                    f"projects/{project_file.project_id}/"
+                )
+
+                if (
+                    not object_key
+                    or not object_key.startswith(
+                        expected_prefix
+                    )
+                    or object_key == expected_prefix
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid R2 file path",
+                    )
+
+                storage_objects.append(object_key)
+
+            # Delete submission results first.
+            db.query(models.SubmissionResult).filter(
+                models.SubmissionResult.project_id.in_(
+                    project_ids
+                )
+            ).delete(synchronize_session=False)
+
+            # Delete checklist items.
+            db.query(models.ChecklistItem).filter(
+                models.ChecklistItem.project_id.in_(
+                    project_ids
+                )
+            ).delete(synchronize_session=False)
+
+            # Delete extracted requirements.
+            db.query(models.Requirement).filter(
+                models.Requirement.project_id.in_(
+                    project_ids
+                )
+            ).delete(synchronize_session=False)
+
+            # Delete PDF metadata.
+            db.query(models.ProjectFile).filter(
+                models.ProjectFile.project_id.in_(
+                    project_ids
+                )
+            ).delete(synchronize_session=False)
+
+            # Delete projects.
+            db.query(models.Project).filter(
+                models.Project.user_id == user_id
+            ).delete(synchronize_session=False)
+
+        # Delete all refresh tokens.
+        db.query(models.RefreshToken).filter(
+            models.RefreshToken.user_id == user_id
+        ).delete(synchronize_session=False)
+
+        # Delete the user account.
+        db.delete(user)
+
+        # Detect database errors before storage cleanup.
+        db.flush()
+
+        # Delete all registered PDF objects from R2.
+        for object_key in storage_objects:
+            delete_file_from_r2(object_key)
+
+        # Delete cached translations belonging to the user.
+        delete_user_translation_cache(user_id)
+
+        # Commit PostgreSQL changes.
+        db.commit()
+
+        return {
+            "message": "Account deleted successfully"
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception as error:
+        db.rollback()
+
+        print(
+            "ACCOUNT DELETE ERROR:",
+            type(error).__name__,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Could not complete account deletion. "
+                "Please try again later."
+            ),
+        ) from error
+# ==================================================
+# UPLOAD PDF TO CLOUDFLARE R2
+# ==================================================
+
+@app.post("/projects/{project_id}/files")
+def upload_file(
+    project_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    get_owned_project(project_id, db, current_user)
+
+    original_filename = os.path.basename(
+        (file.filename or "file").replace("\\", "/")
+    )
+
+    if not original_filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are allowed",
+        )
+
+    try:
+        file_bytes = file.file.read(MAX_PDF_SIZE + 1)
+    finally:
+        file.file.close()
+
+    if not file_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="File is empty",
+        )
+
+    if len(file_bytes) > MAX_PDF_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="PDF exceeds 20 MB limit",
+        )
+
+    if not file_bytes.startswith(b"%PDF-"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid PDF file",
+        )
+
+    object_key = (
+        f"users/{current_user.id}/"
+        f"projects/{project_id}/"
+        f"{uuid.uuid4()}.pdf"
+    )
+
+    try:
+        upload_file_to_r2(
+            file_bytes=file_bytes,
+            object_key=object_key,
+        )
+    except Exception as error:
+        print("R2 UPLOAD ERROR:", type(error).__name__)
+
+        raise HTTPException(
+            status_code=502,
+            detail="Could not upload file to storage",
+        ) from error
+
+    db_file = models.ProjectFile(
+        project_id=project_id,
+        filename=original_filename,
+        file_path=f"r2://{object_key}",
+    )
+
+    try:
+        db.add(db_file)
+        db.flush()
+
+    except Exception as error:
+        db.rollback()
+
+        try:
+            delete_file_from_r2(object_key)
+
+        except Exception as cleanup_error:
+            print(
+                "R2 CLEANUP ERROR:",
+                type(cleanup_error).__name__,
+            )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Could not save PDF metadata",
+        ) from error
+
+    try:
+        db.commit()
+
+    except Exception as error:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail="Could not confirm PDF registration",
+        ) from error
+
+    db.refresh(db_file)
+
+    return {
+        "id": db_file.id,
+        "project_id": db_file.project_id,
+        "filename": db_file.filename,
+        "file_path": db_file.file_path,
+        "uploaded_at": db_file.uploaded_at,
     }
 
 

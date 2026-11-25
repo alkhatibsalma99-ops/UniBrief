@@ -1,0 +1,1123 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+
+<head>
+
+  <meta charset="UTF-8">
+
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1">
+
+  <meta name="robots" content="index, follow">
+
+  <meta name="theme-color" content="#6750A4">
+
+  <title>Account Deletion – UniBrief</title>
+
+  <link rel="icon" href="favicon.png">
+
+  <style>
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #f7f7fb;
+      color: #1d1b20;
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      line-height: 1.8;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: white;
+      border-bottom: 1px solid #ded8e8;
+    }
+
+    .header-inner {
+      max-width: 900px;
+      margin: auto;
+      padding: 15px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .brand {
+      font-size: 24px;
+      font-weight: bold;
+      color: #4f378b;
+      text-decoration: none;
+    }
+
+    .language-button {
+      border: none;
+      padding: 9px 16px;
+      border-radius: 24px;
+      background: #f4effb;
+      color: #4f378b;
+      cursor: pointer;
+      font: inherit;
+      font-weight: bold;
+    }
+
+    .language-button.active {
+      background: #6750a4;
+      color: white;
+    }
+
+    .hero {
+      background: linear-gradient(
+        135deg, #2b1b4d, #6750a4
+      );
+      color: white;
+      padding: 45px 20px;
+    }
+
+    .hero-inner {
+      max-width: 900px;
+      margin: auto;
+    }
+
+    h1 {
+      font-size: clamp(28px, 5vw, 40px);
+      margin: 0;
+    }
+
+    h2 {
+      color: #4f378b;
+      font-size: 21px;
+      margin-top: 28px;
+    }
+
+    main {
+      max-width: 900px;
+      margin: 30px auto;
+      padding: 0 16px;
+    }
+
+    article {
+      background: white;
+      padding: clamp(20px, 4vw, 40px);
+      border-radius: 16px;
+      border: 1px solid #ded8e8;
+      box-shadow: 0 10px 30px rgba(43,27,77,.08);
+    }
+
+    .info {
+      background: #f4effb;
+      border: 1px solid #d8c8f2;
+      padding: 18px;
+      border-radius: 12px;
+    }
+
+    .warning {
+      background: #fff6e8;
+      border: 1px solid #e9b96a;
+      padding: 18px;
+      border-radius: 12px;
+      color: #5a3b00;
+    }
+
+    form {
+      display: grid;
+      gap: 15px;
+      margin-top: 20px;
+    }
+
+    label {
+      font-weight: 600;
+      color: #4f378b;
+    }
+
+    input[type="email"],
+    input[type="text"],
+    textarea {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #ded8e8;
+      border-radius: 10px;
+      font: inherit;
+      background: white;
+    }
+
+    textarea {
+      min-height: 100px;
+      resize: vertical;
+    }
+
+    input:focus,
+    textarea:focus {
+      outline: 2px solid #b9a7e0;
+      border-color: #6750a4;
+    }
+
+    .checkbox {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-weight: normal;
+      color: #1d1b20;
+    }
+
+    input[type="checkbox"] {
+      accent-color: #6750a4;
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+      margin-top: 6px;
+    }
+
+    .submit-button {
+      background: #6750a4;
+      color: white;
+      border: none;
+      border-radius: 24px;
+      padding: 14px 20px;
+      font: inherit;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    .submit-button:hover {
+      background: #4f378b;
+    }
+
+    .status {
+      color: #4f378b;
+      font-weight: bold;
+    }
+
+    a {
+      color: #4f378b;
+      overflow-wrap: anywhere;
+    }
+
+    footer {
+      text-align: center;
+      padding: 25px;
+      background: white;
+      border-top: 1px solid #ded8e8;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    @media (max-width: 600px) {
+      .header-inner {
+        justify-content: center;
+      }
+    }
+
+  </style>
+
+</head>
+
+<body>
+
+<header>
+
+  <div class="header-inner">
+
+    <a class="brand" href="./">UniBrief</a>
+
+    <div>
+
+      <button
+        class="language-button"
+        data-lang="en"
+        onclick="setLanguage('en')">
+        English
+      </button>
+
+      <button
+        class="language-button"
+        data-lang="de"
+        onclick="setLanguage('de')">
+        Deutsch
+      </button>
+
+      <button
+        class="language-button"
+        data-lang="ar"
+        onclick="setLanguage('ar')">
+        العربية
+      </button>
+
+    </div>
+
+  </div>
+
+</header>
+
+<!-- =========================================
+     ENGLISH
+========================================== -->
+
+<section class="language" data-section="en">
+
+  <div class="hero">
+    <div class="hero-inner">
+
+      <h1>Request account deletion</h1>
+
+      <p>
+        Permanently delete your UniBrief account
+        and associated data.
+      </p>
+
+    </div>
+  </div>
+
+  <main>
+
+    <article>
+
+      <div class="info">
+        You can use this public page without
+        installing UniBrief or signing in.
+        You can also delete your account
+        directly within the application.
+      </div>
+
+      <h2>1. Delete your account in the app</h2>
+
+      <p>
+        Sign in to UniBrief, open the account menu,
+        select the account deletion option and
+        confirm your decision.
+      </p>
+
+      <h2>2. Request deletion by email</h2>
+
+      <p>
+        If you cannot access the application,
+        use the form below to prepare an email
+        requesting account deletion.
+        You must send the email yourself.
+      </p>
+
+      <p>
+        We may verify your identity before
+        processing the request.
+        Never send your password.
+      </p>
+
+      <h2>3. Data included in deletion</h2>
+
+      <ul>
+        <li>Name and email address.</li>
+        <li>Password hash and account information.</li>
+        <li>Projects and descriptions.</li>
+        <li>Registered uploaded PDF files.</li>
+        <li>Requirements and checklists.</li>
+        <li>Submission results and feedback.</li>
+        <li>Associated translation cache entries.</li>
+        <li>Refresh tokens and account access.</li>
+        <li>Account-linked AI usage records.</li>
+      </ul>
+
+      <h2>4. Data that may remain</h2>
+
+      <ul>
+        <li>Records required by law.</li>
+        <li>Necessary security records.</li>
+        <li>Provider backups until their retention ends.</li>
+        <li>External provider processing records.</li>
+      </ul>
+
+      <p>
+        Further information is available in our
+        <a href="privacy.html">Privacy Policy</a>.
+      </p>
+
+      <h2>5. Processing time</h2>
+
+      <p>
+        We respond without undue delay and normally
+        within one month, subject to Article 12 GDPR.
+        We will inform you about the outcome
+        of your request.
+      </p>
+
+      <div class="warning">
+        <strong>Warning:</strong>
+        Account deletion is permanent.
+        Deleted content cannot be recovered
+        through your UniBrief account.
+      </div>
+
+      <h2>6. Create deletion request</h2>
+
+      <form data-form="en" method="post">
+
+        <label for="en-email">
+          Account email address
+        </label>
+
+        <input
+          id="en-email"
+          name="email"
+          type="email"
+          autocomplete="email"
+          required>
+
+        <label for="en-name">
+          Name (optional)
+        </label>
+
+        <input
+          id="en-name"
+          name="name"
+          type="text"
+          autocomplete="name">
+
+        <label for="en-details">
+          Additional information (optional)
+        </label>
+
+        <textarea
+          id="en-details"
+          name="details"
+          maxlength="1000">
+        </textarea>
+
+        <label class="checkbox">
+
+          <input
+            name="confirm"
+            type="checkbox"
+            required>
+
+          I understand that account deletion
+          is permanent.
+
+        </label>
+
+        <button class="submit-button" type="submit">
+          Create deletion request email
+        </button>
+
+        <p class="status" role="status"></p>
+
+      </form>
+
+      <p>
+        Alternatively, email us directly:
+        <a href="mailto:unibriefsupport@gmail.com">
+          unibriefsupport@gmail.com
+        </a>
+      </p>
+
+      <h2>7. Responsible contact</h2>
+
+      <p>
+        Salma Alkhatib – UniBrief<br>
+        Mühleneck 17<br>
+        30952 Ronnenberg, Germany
+      </p>
+
+    </article>
+
+  </main>
+
+  <footer>
+
+    © 2026 UniBrief |
+
+    <a href="privacy.html">Privacy Policy</a> |
+
+    <a href="./">Home</a>
+
+  </footer>
+
+</section>
+
+<!-- =========================================
+     GERMAN
+========================================== -->
+
+<section class="language" data-section="de" hidden>
+
+  <div class="hero">
+
+    <div class="hero-inner">
+
+      <h1>Kontolöschung beantragen</h1>
+
+      <p>
+        Löschen Sie Ihr UniBrief-Konto und
+        die zugehörigen Daten dauerhaft.
+      </p>
+
+    </div>
+
+  </div>
+
+  <main>
+
+    <article>
+
+      <div class="info">
+        Diese öffentliche Seite kann ohne
+        Installation oder Anmeldung verwendet werden.
+        Sie können Ihr Konto auch direkt
+        innerhalb der Anwendung löschen.
+      </div>
+
+      <h2>1. Konto in der App löschen</h2>
+
+      <p>
+        Melden Sie sich bei UniBrief an,
+        öffnen Sie das Kontomenü, wählen Sie
+        die Option zur Kontolöschung und
+        bestätigen Sie Ihre Entscheidung.
+      </p>
+
+      <h2>2. Löschung per E-Mail beantragen</h2>
+
+      <p>
+        Wenn Sie keinen Zugriff auf die App haben,
+        können Sie mit dem folgenden Formular
+        eine E-Mail zur Kontolöschung erstellen.
+        Sie müssen die E-Mail selbst absenden.
+      </p>
+
+      <p>
+        Vor der Bearbeitung kann eine
+        Identitätsprüfung erforderlich sein.
+        Senden Sie niemals Ihr Passwort.
+      </p>
+
+      <h2>3. Welche Daten werden gelöscht?</h2>
+
+      <ul>
+        <li>Name und E-Mail-Adresse.</li>
+        <li>Passwort-Hash und Kontoinformationen.</li>
+        <li>Projekte und Beschreibungen.</li>
+        <li>Registrierte hochgeladene PDF-Dateien.</li>
+        <li>Anforderungen und Checklisten.</li>
+        <li>Abgabeergebnisse und Feedback.</li>
+        <li>Zugeordnete Übersetzungs-Cache-Einträge.</li>
+        <li>Refresh-Tokens und Kontozugriff.</li>
+        <li>Kontobezogene KI-Nutzungsdaten.</li>
+      </ul>
+
+      <h2>4. Welche Daten können verbleiben?</h2>
+
+      <ul>
+        <li>Gesetzlich erforderliche Daten.</li>
+        <li>Notwendige Sicherheitsdaten.</li>
+        <li>Sicherungskopien bis zum Ablauf ihrer Frist.</li>
+        <li>Verarbeitungsdaten externer Anbieter.</li>
+      </ul>
+
+      <p>
+        Weitere Informationen finden Sie in unserer
+        <a href="privacy.html">Datenschutzerklärung</a>.
+      </p>
+
+      <h2>5. Bearbeitungszeit</h2>
+
+      <p>
+        Wir beantworten Anfragen unverzüglich
+        und grundsätzlich innerhalb eines Monats
+        gemäß Art. 12 DSGVO.
+        Wir informieren Sie über das Ergebnis
+        Ihres Antrags.
+      </p>
+
+      <div class="warning">
+
+        <strong>Achtung:</strong>
+
+        Die Kontolöschung ist dauerhaft.
+        Gelöschte Inhalte können über Ihr
+        UniBrief-Konto nicht wiederhergestellt werden.
+
+      </div>
+
+      <h2>6. Löschantrag erstellen</h2>
+
+      <form data-form="de" method="post">
+
+        <label for="de-email">
+          E-Mail-Adresse Ihres UniBrief-Kontos
+        </label>
+
+        <input
+          id="de-email"
+          name="email"
+          type="email"
+          autocomplete="email"
+          required>
+
+        <label for="de-name">
+          Name (optional)
+        </label>
+
+        <input
+          id="de-name"
+          name="name"
+          type="text"
+          autocomplete="name">
+
+        <label for="de-details">
+          Zusätzliche Informationen (optional)
+        </label>
+
+        <textarea
+          id="de-details"
+          name="details"
+          maxlength="1000">
+        </textarea>
+
+        <label class="checkbox">
+
+          <input
+            name="confirm"
+            type="checkbox"
+            required>
+
+          Ich verstehe, dass die Kontolöschung
+          dauerhaft ist.
+
+        </label>
+
+        <button class="submit-button" type="submit">
+          Löschantrag per E-Mail erstellen
+        </button>
+
+        <p class="status" role="status"></p>
+
+      </form>
+
+      <p>
+
+        Alternativ können Sie uns direkt kontaktieren:
+
+        <a href="mailto:unibriefsupport@gmail.com">
+          unibriefsupport@gmail.com
+        </a>
+
+      </p>
+
+      <h2>7. Verantwortliche</h2>
+
+      <p>
+
+        Salma Alkhatib – UniBrief<br>
+
+        Mühleneck 17<br>
+
+        30952 Ronnenberg, Deutschland
+
+      </p>
+
+    </article>
+
+  </main>
+
+  <footer>
+
+    © 2026 UniBrief |
+
+    <a href="privacy.html">Datenschutzerklärung</a> |
+
+    <a href="./">Startseite</a>
+
+  </footer>
+
+</section>
+
+<!-- =========================================
+     ARABIC
+========================================== -->
+
+<section class="language" data-section="ar" hidden>
+
+  <div class="hero">
+
+    <div class="hero-inner">
+
+      <h1>طلب حذف الحساب</h1>
+
+      <p>
+        احذف حسابك في UniBrief والبيانات
+        المرتبطة به بشكل نهائي.
+      </p>
+
+    </div>
+
+  </div>
+
+  <main>
+
+    <article>
+
+      <div class="info">
+
+        يمكنك استخدام هذه الصفحة العامة دون
+        تثبيت التطبيق أو تسجيل الدخول.
+        كما يمكنك حذف حسابك مباشرة من داخل التطبيق.
+
+      </div>
+
+      <h2>1. حذف الحساب من داخل التطبيق</h2>
+
+      <p>
+
+        سجل الدخول إلى UniBrief وافتح قائمة الحساب،
+        ثم اختر حذف الحساب وأكد قرارك.
+
+      </p>
+
+      <h2>2. طلب الحذف عبر البريد الإلكتروني</h2>
+
+      <p>
+
+        إذا لم تتمكن من الوصول إلى التطبيق،
+        يمكنك استخدام النموذج أدناه لإنشاء
+        رسالة طلب حذف الحساب.
+        يجب عليك إرسال الرسالة بنفسك.
+
+      </p>
+
+      <p>
+
+        قد نطلب التحقق من هويتك قبل معالجة الطلب.
+        لا ترسل كلمة المرور الخاصة بك أبداً.
+
+      </p>
+
+      <h2>3. البيانات التي يشملها الحذف</h2>
+
+      <ul>
+
+        <li>الاسم والبريد الإلكتروني.</li>
+
+        <li>تجزئة كلمة المرور ومعلومات الحساب.</li>
+
+        <li>المشاريع والأوصاف.</li>
+
+        <li>ملفات PDF المرفوعة والمسجلة.</li>
+
+        <li>المتطلبات وقوائم التحقق.</li>
+
+        <li>نتائج المراجعة والملاحظات.</li>
+
+        <li>إدخالات ذاكرة الترجمة المرتبطة بالحساب.</li>
+
+        <li>رموز تجديد الجلسات والوصول إلى الحساب.</li>
+
+        <li>سجلات استخدام الذكاء الاصطناعي المرتبطة بالحساب.</li>
+
+      </ul>
+
+      <h2>4. البيانات التي قد تبقى</h2>
+
+      <ul>
+
+        <li>البيانات المطلوبة قانونياً.</li>
+
+        <li>السجلات الأمنية الضرورية.</li>
+
+        <li>النسخ الاحتياطية حتى انتهاء مدة الاحتفاظ بها.</li>
+
+        <li>سجلات معالجة البيانات لدى المزودين الخارجيين.</li>
+
+      </ul>
+
+      <p>
+
+        لمزيد من المعلومات اقرأ
+
+        <a href="privacy.html">سياسة الخصوصية</a>.
+
+      </p>
+
+      <h2>5. مدة معالجة الطلب</h2>
+
+      <p>
+
+        نجيب عن الطلبات دون تأخير غير مبرر
+        وعادة خلال شهر واحد وفق المادة 12 من GDPR.
+        سنبلغك بنتيجة معالجة طلبك.
+
+      </p>
+
+      <div class="warning">
+
+        <strong>تحذير:</strong>
+
+        حذف الحساب نهائي، ولا يمكنك استعادة
+        المحتوى المحذوف من خلال حسابك في UniBrief.
+
+      </div>
+
+      <h2>6. إنشاء طلب حذف الحساب</h2>
+
+      <form data-form="ar" method="post">
+
+        <label for="ar-email">
+
+          البريد الإلكتروني المرتبط بحسابك
+
+        </label>
+
+        <input
+          id="ar-email"
+          name="email"
+          type="email"
+          autocomplete="email"
+          required>
+
+        <label for="ar-name">
+
+          الاسم (اختياري)
+
+        </label>
+
+        <input
+          id="ar-name"
+          name="name"
+          type="text"
+          autocomplete="name">
+
+        <label for="ar-details">
+
+          معلومات إضافية (اختياري)
+
+        </label>
+
+        <textarea
+          id="ar-details"
+          name="details"
+          maxlength="1000">
+        </textarea>
+
+        <label class="checkbox">
+
+          <input
+            name="confirm"
+            type="checkbox"
+            required>
+
+          أفهم أن حذف الحساب نهائي.
+
+        </label>
+
+        <button class="submit-button" type="submit">
+
+          إنشاء رسالة طلب الحذف
+
+        </button>
+
+        <p class="status" role="status"></p>
+
+      </form>
+
+      <p>
+
+        يمكنك أيضاً مراسلتنا مباشرة:
+
+        <a href="mailto:unibriefsupport@gmail.com">
+
+          unibriefsupport@gmail.com
+
+        </a>
+
+      </p>
+
+      <h2>7. المسؤول عن التطبيق</h2>
+
+      <p dir="ltr">
+
+        Salma Alkhatib – UniBrief<br>
+
+        Mühleneck 17<br>
+
+        30952 Ronnenberg, Germany
+
+      </p>
+
+    </article>
+
+  </main>
+
+  <footer>
+
+    © 2026 UniBrief |
+
+    <a href="privacy.html">سياسة الخصوصية</a> |
+
+    <a href="./">الصفحة الرئيسية</a>
+
+  </footer>
+
+</section>
+
+<script>
+
+  const languages = ["en", "de", "ar"];
+
+  const titles = {
+
+    en: "Account Deletion – UniBrief",
+
+    de: "Kontolöschung – UniBrief",
+
+    ar: "حذف الحساب – UniBrief"
+
+  };
+
+  const messages = {
+
+    en: {
+
+      subject: "UniBrief account deletion request",
+
+      intro: "Please permanently delete my UniBrief account and associated data.",
+
+      email: "Account email",
+
+      name: "Name",
+
+      details: "Additional information",
+
+      confirm: "I understand that account deletion is permanent.",
+
+      status: "Your email application should open. Please send the prepared email. Your request has not been submitted automatically."
+
+    },
+
+    de: {
+
+      subject: "UniBrief – Antrag auf Kontolöschung",
+
+      intro: "Bitte löschen Sie mein UniBrief-Konto und alle zugehörigen Daten dauerhaft.",
+
+      email: "Konto-E-Mail-Adresse",
+
+      name: "Name",
+
+      details: "Zusätzliche Informationen",
+
+      confirm: "Ich verstehe, dass die Kontolöschung dauerhaft ist.",
+
+      status: "Ihre E-Mail-Anwendung sollte sich öffnen. Bitte senden Sie die vorbereitete E-Mail ab. Der Antrag wurde nicht automatisch übermittelt."
+
+    },
+
+    ar: {
+
+      subject: "طلب حذف حساب UniBrief",
+
+      intro: "يرجى حذف حسابي في UniBrief والبيانات المرتبطة به بشكل نهائي.",
+
+      email: "البريد الإلكتروني للحساب",
+
+      name: "الاسم",
+
+      details: "معلومات إضافية",
+
+      confirm: "أفهم أن حذف الحساب نهائي.",
+
+      status: "يفترض أن يفتح تطبيق البريد الإلكتروني. يرجى إرسال الرسالة المجهزة بنفسك. لم يتم إرسال الطلب تلقائياً."
+
+    }
+
+  };
+
+  function setLanguage(lang) {
+
+    if (!languages.includes(lang)) {
+
+      lang = "en";
+
+    }
+
+    document.documentElement.lang = lang;
+
+    document.documentElement.dir =
+      lang === "ar" ? "rtl" : "ltr";
+
+    document.title = titles[lang];
+
+    document.querySelectorAll(".language")
+      .forEach(section => {
+
+        section.hidden =
+          section.dataset.section !== lang;
+
+      });
+
+    document.querySelectorAll("[data-lang]")
+      .forEach(button => {
+
+        const active =
+          button.dataset.lang === lang;
+
+        button.classList.toggle(
+          "active",
+          active
+        );
+
+        button.setAttribute(
+          "aria-pressed",
+          String(active)
+        );
+
+      });
+
+    try {
+
+      localStorage.setItem(
+        "unibrief.language",
+        lang
+      );
+
+    } catch (error) {}
+
+    try {
+
+      const url = new URL(window.location.href);
+
+      url.searchParams.set("lang", lang);
+
+      history.replaceState(null, "", url);
+
+    } catch (error) {}
+
+  }
+
+  function getInitialLanguage() {
+
+    const param =
+      new URLSearchParams(location.search)
+        .get("lang");
+
+    if (languages.includes(param)) {
+
+      return param;
+
+    }
+
+    try {
+
+      const saved =
+        localStorage.getItem("unibrief.language");
+
+      if (languages.includes(saved)) {
+
+        return saved;
+
+      }
+
+    } catch (error) {}
+
+    const browserLanguage =
+      (navigator.language || "en")
+        .slice(0, 2)
+        .toLowerCase();
+
+    return languages.includes(browserLanguage)
+      ? browserLanguage
+      : "en";
+
+  }
+
+  document.querySelectorAll("form[data-form]")
+    .forEach(form => {
+
+      form.addEventListener("submit", event => {
+
+        event.preventDefault();
+
+        if (!form.checkValidity()) {
+
+          form.reportValidity();
+
+          return;
+
+        }
+
+        const lang = form.dataset.form;
+
+        const message = messages[lang];
+
+        const data = new FormData(form);
+
+        const email =
+          String(data.get("email") || "").trim();
+
+        const name =
+          String(data.get("name") || "").trim();
+
+        const details =
+          String(data.get("details") || "").trim();
+
+        const lines = [
+
+          message.intro,
+
+          "",
+
+          message.email + ": " + email
+
+        ];
+
+        if (name) {
+
+          lines.push(
+            message.name + ": " + name
+          );
+
+        }
+
+        if (details) {
+
+          lines.push(
+            message.details + ": " + details
+          );
+
+        }
+
+        lines.push("");
+
+        lines.push(message.confirm);
+
+        const mailto =
+          "mailto:unibriefsupport@gmail.com" +
+
+          "?subject=" +
+
+          encodeURIComponent(message.subject) +
+
+          "&body=" +
+
+          encodeURIComponent(lines.join("\n"));
+
+        form.querySelector(".status").textContent =
+          message.status;
+
+        window.location.href = mailto;
+
+      });
+
+    });
+
+  setLanguage(getInitialLanguage());
+
+</script>
+
+</body>
+
+</html>

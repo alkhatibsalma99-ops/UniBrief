@@ -27,3 +27,7 @@ frontend/.flutter-plugins-dependencies
 .DS_Store
 Thumbs.db
 keys.txt
+# Local backup files
+/UniBrief_backup_*/
+/backup_before_fix_*/
+/backend/app/main_backup_before_delete_fix.py

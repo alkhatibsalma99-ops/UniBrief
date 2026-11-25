@@ -12,3 +12,7 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+# Android signing secrets
+/android/key.properties
+*.jks
+*.keystore

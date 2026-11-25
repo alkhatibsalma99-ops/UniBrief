@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart' as picker;
 import 'package:http/http.dart' as http;
@@ -374,6 +373,30 @@ class ApiService {
   static Future<dynamic> getMe(String token) async {
     final response = await _get('/me', token);
     return _decode(response);
+  }
+
+  // =====================================
+  // DELETE ACCOUNT
+  // =====================================
+
+  static Future<void> deleteAccount(String token) async {
+    final response = await _authorizedRequest(
+      token,
+      (activeToken) => http
+          .delete(Uri.parse('$baseUrl/me'), headers: _headers(activeToken))
+          .timeout(uploadTimeout),
+    );
+
+    _decode(response);
+
+    try {
+      await _refreshInProgress;
+    } catch (_) {
+      // Continue local cleanup after successful deletion.
+    }
+
+    await AuthStorage.clearTokens();
+    clearCache();
   }
 
   // =====================================

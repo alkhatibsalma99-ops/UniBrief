@@ -514,7 +514,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
         allowedExtensions: ['pdf'],
       );
 
-      if (!mounted || selectedFiles == null || selectedFiles.isEmpty) {
+      if (!mounted || selectedFiles.isEmpty) {
         return;
       }
 

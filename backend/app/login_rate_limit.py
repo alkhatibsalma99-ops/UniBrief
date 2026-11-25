@@ -238,3 +238,36 @@ def clear_login_attempts(db: Session, key: str):
         """),
         {"key": key},
     )
+    # ==================================================
+# CLEANUP EXPIRED LOGIN RATE LIMIT RECORDS
+# ==================================================
+
+def cleanup_expired_login_attempts(db: Session):
+    """
+    Remove expired login security records.
+
+    Active login blocks and attempt windows
+    remain protected.
+    """
+    now = _utc_now()
+
+    cutoff = now - timedelta(
+        minutes=WINDOW_MINUTES
+    )
+
+    result = db.execute(
+        text("""
+            DELETE FROM login_rate_limits
+            WHERE window_started_at <= :cutoff
+              AND (
+                  blocked_until IS NULL
+                  OR blocked_until <= :now
+              )
+        """),
+        {
+            "cutoff": cutoff,
+            "now": now,
+        },
+    )
+
+    return result.rowcount
