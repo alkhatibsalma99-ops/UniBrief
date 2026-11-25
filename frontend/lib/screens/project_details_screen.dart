@@ -596,7 +596,26 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
 
       if (!mounted) return;
 
+      setState(() {
+        if (selectedSubmissionFileId == fileId) {
+          selectedSubmissionFileId = null;
+        }
+
+        submissionReport = null;
+        reportError = null;
+        submissionResults = [];
+      });
+
       await loadFiles();
+      if (!mounted) return;
+
+      await loadRequirements();
+      if (!mounted) return;
+
+      await loadChecklist();
+      if (!mounted) return;
+
+      await loadSubmissionResults();
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1259,6 +1278,48 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                         submissionReport = null;
                       });
                     },
+                  ),
+                  const SizedBox(height: 12),
+
+                  OutlinedButton.icon(
+                    onPressed:
+                        selectedSubmissionFileId == null ||
+                            isCheckingSubmission ||
+                            isUploading ||
+                            isLoadingFiles ||
+                            isAnalyzing ||
+                            isLoadingReport
+                        ? null
+                        : () async {
+                            final fileId = selectedSubmissionFileId;
+
+                            if (fileId == null) return;
+
+                            for (final file in files) {
+                              if (itemId(file) == fileId) {
+                                final fileName = file is Map
+                                    ? (file['filename'] ??
+                                              file['name'] ??
+                                              'PDF $fileId')
+                                          .toString()
+                                    : 'PDF $fileId';
+
+                                await deletePdfFile(fileId, fileName);
+                                return;
+                              }
+                            }
+                          },
+                    icon: const Icon(Icons.delete_outline),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                    ),
+                    label: Text(
+                      t(
+                        'Delete selected PDF',
+                        'Ausgewählte PDF löschen',
+                        'حذف ملف PDF المحدد',
+                      ),
+                    ),
                   ),
 
                   const SizedBox(height: 12),
