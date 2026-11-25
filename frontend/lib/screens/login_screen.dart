@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
 import 'dashboard_screen.dart';
+import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   final String selectedLanguage;
@@ -350,6 +351,64 @@ class _LoginScreenState extends State<LoginScreen> {
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
+                        ),
+                      ),
+
+                      const SizedBox(height: 20),
+                      const Divider(),
+
+                      const SizedBox(height: 12),
+
+                      Text(
+                        t(
+                          "Don't have an account?",
+                          'Du hast noch kein Konto?',
+                          'ليس لديك حساب؟',
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+
+                      const SizedBox(height: 8),
+
+                      OutlinedButton.icon(
+                        onPressed: _isLoading
+                            ? null
+                            : () async {
+                                final registeredEmail =
+                                    await Navigator.of(context).push<String>(
+                                      MaterialPageRoute<String>(
+                                        builder: (_) => RegisterScreen(
+                                          selectedLanguage:
+                                              Localizations.localeOf(
+                                                context,
+                                              ).languageCode,
+                                          onLanguageChanged:
+                                              widget.onLanguageChanged,
+                                        ),
+                                      ),
+                                    );
+
+                                if (!mounted) return;
+
+                                if (registeredEmail != null) {
+                                  _emailController.text = registeredEmail;
+                                  _passwordController.clear();
+                                }
+                              },
+                        icon: const Icon(Icons.person_add_outlined),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF6750A4),
+                          minimumSize: const Size(double.infinity, 50),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        label: Text(
+                          t(
+                            'Create Account',
+                            'Konto erstellen',
+                            'إنشاء حساب جديد',
+                          ),
                         ),
                       ),
 
