@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import 'dashboard_screen.dart';
 import 'register_screen.dart';
+import '../services/error_handler.dart';
 
 class LoginScreen extends StatefulWidget {
   final String selectedLanguage;
@@ -92,11 +93,11 @@ class _LoginScreenState extends State<LoginScreen> {
     } catch (error) {
       if (!mounted) return;
 
+      final language = Localizations.localeOf(context).languageCode;
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            '${t("Login failed", "Anmeldung fehlgeschlagen", "فشل تسجيل الدخول")}: $error',
-          ),
+          content: Text(ErrorHandler.message(error, language, isLogin: true)),
           backgroundColor: Colors.red,
           duration: const Duration(seconds: 5),
         ),

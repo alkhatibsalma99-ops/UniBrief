@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart' as picker;
 
 import '../services/api_service.dart';
+import '../services/error_handler.dart';
 
 class ProjectDetailsScreen extends StatefulWidget {
   final String token;
@@ -50,6 +51,12 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   String? checklistError;
   String? submissionError;
   String? reportError;
+  String friendlyError(Object error) {
+    return ErrorHandler.message(
+      error,
+      Localizations.localeOf(context).languageCode,
+    );
+  }
 
   final Set<int> updatingItemIds = {};
 
@@ -338,8 +345,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
             }
           });
         } catch (e) {
-          debugPrint('Translation error: $e');
-
+          debugPrint('Translation error: ${e.runtimeType}');
           for (final text in missing) {
             _failedTranslations.add(_translationKey(requestedLanguage, text));
           }
@@ -409,7 +415,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => filesError = '$e');
+      setState(() => filesError = friendlyError(e));
     } finally {
       if (mounted) {
         setState(() => isLoadingFiles = false);
@@ -437,7 +443,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       _scheduleTranslation();
     } catch (e) {
       if (!mounted) return;
-      setState(() => requirementsError = '$e');
+      setState(() => requirementsError = friendlyError(e));
     } finally {
       if (mounted) {
         setState(() => isLoadingRequirements = false);
@@ -465,7 +471,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       _scheduleTranslation();
     } catch (e) {
       if (!mounted) return;
-      setState(() => checklistError = '$e');
+      setState(() => checklistError = friendlyError(e));
     } finally {
       if (mounted) {
         setState(() => isLoadingChecklist = false);
@@ -493,7 +499,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       _scheduleTranslation();
     } catch (e) {
       if (!mounted) return;
-      setState(() => submissionError = '$e');
+      setState(() => submissionError = friendlyError(e));
     } finally {
       if (mounted) {
         setState(() => isLoadingSubmissionResults = false);
@@ -545,10 +551,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     } catch (e) {
       if (!mounted) return;
 
-      showMessage(
-        '${t("Upload failed", "Hochladen fehlgeschlagen", "فشل رفع الملف")}: $e',
-        error: true,
-      );
+      showMessage(friendlyError(e), error: true);
     } finally {
       if (mounted) {
         setState(() => isUploading = false);
@@ -633,18 +636,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     } catch (e) {
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            t(
-              'Failed to delete PDF: $e',
-              'PDF konnte nicht gelöscht werden: $e',
-              'فشل حذف ملف PDF: $e',
-            ),
-          ),
-          backgroundColor: Colors.red,
-        ),
-      );
+      showMessage(friendlyError(e), error: true);
     }
   }
 
@@ -677,7 +669,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      showMessage('$e', error: true);
+      showMessage(friendlyError(e), error: true);
     } finally {
       if (mounted) {
         setState(() => isAnalyzing = false);
@@ -716,7 +708,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      showMessage('$e', error: true);
+      showMessage(friendlyError(e), error: true);
     } finally {
       if (mounted) {
         setState(() => isGeneratingChecklist = false);
@@ -741,7 +733,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       await loadChecklist();
     } catch (e) {
       if (!mounted) return;
-      showMessage('$e', error: true);
+      showMessage(friendlyError(e), error: true);
     } finally {
       if (mounted) {
         setState(() => updatingItemIds.remove(id));
@@ -778,7 +770,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       showMessage(t('Submission checked', 'Abgabe geprüft', 'تم فحص التسليم'));
     } catch (e) {
       if (!mounted) return;
-      showMessage('$e', error: true);
+      showMessage(friendlyError(e), error: true);
     } finally {
       if (mounted) {
         setState(() => isCheckingSubmission = false);
@@ -811,7 +803,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       _scheduleTranslation();
     } catch (e) {
       if (!mounted) return;
-      setState(() => reportError = '$e');
+      setState(() => reportError = friendlyError(e));
     } finally {
       if (mounted) {
         setState(() => isLoadingReport = false);

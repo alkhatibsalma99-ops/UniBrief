@@ -31,3 +31,5 @@ keys.txt
 /UniBrief_backup_*/
 /backup_before_fix_*/
 /backend/app/main_backup_before_delete_fix.py
+# Cloudflare Wrangler
+/frontend/.wrangler/

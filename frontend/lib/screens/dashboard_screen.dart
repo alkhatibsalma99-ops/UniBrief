@@ -4,6 +4,7 @@ import '../services/api_service.dart';
 import '../services/auth_storage.dart';
 import 'login_screen.dart';
 import 'project_details_screen.dart';
+import '../services/error_handler.dart';
 
 class DashboardScreen extends StatefulWidget {
   final String token;
@@ -40,6 +41,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       default:
         return en;
     }
+  }
+
+  String friendlyError(Object error) {
+    return ErrorHandler.message(
+      error,
+      Localizations.localeOf(context).languageCode,
+    );
   }
 
   @override
@@ -79,14 +87,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } catch (e) {
       if (!mounted) return;
 
-      message(
-        t(
-          'Failed to load projects: $e',
-          'Projekte konnten nicht geladen werden: $e',
-          'فشل تحميل المشاريع: $e',
-        ),
-        error: true,
-      );
+      message(friendlyError(e), error: true);
     } finally {
       if (mounted) {
         setState(() {
@@ -154,14 +155,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } catch (e) {
       if (!mounted) return;
 
-      message(
-        t(
-          'Failed to create project: $e',
-          'Projekt konnte nicht erstellt werden: $e',
-          'فشل إنشاء المشروع: $e',
-        ),
-        error: true,
-      );
+      message(friendlyError(e), error: true);
     } finally {
       if (mounted) {
         setState(() {
@@ -213,7 +207,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       message(t('Project deleted', 'Projekt gelöscht', 'تم حذف المشروع'));
     } catch (e) {
       if (!mounted) return;
-      message('$e', error: true);
+      message(friendlyError(e), error: true);
     }
   }
 
@@ -294,7 +288,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       message(t('Project updated', 'Projekt aktualisiert', 'تم تحديث المشروع'));
     } catch (e) {
       if (!mounted) return;
-      message('$e', error: true);
+      message(friendlyError(e), error: true);
     }
   }
 
@@ -351,12 +345,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
     } catch (e) {
       if (!mounted) return;
+
       message(
-        t(
-          'Account deletion could not be confirmed: $e',
-          'Kontolöschung konnte nicht bestätigt werden: $e',
-          'تعذر تأكيد حذف الحساب: $e',
-        ),
+        '${t('Account deletion could not be confirmed.', 'Kontolöschung konnte nicht bestätigt werden.', 'تعذر تأكيد حذف الحساب.')}\n${friendlyError(e)}',
         error: true,
       );
     } finally {

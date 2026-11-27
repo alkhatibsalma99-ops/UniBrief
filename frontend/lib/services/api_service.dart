@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart' as picker;
 import 'package:http/http.dart' as http;
+import 'error_handler.dart';
 
 import 'auth_storage.dart';
 
@@ -33,43 +34,17 @@ class ApiService {
   }
 
   static Future<void> deletePdf(String token, int projectId, int fileId) async {
-    final response = await http.delete(
-      Uri.parse('$baseUrl/projects/$projectId/files/$fileId'),
-      headers: {'Authorization': 'Bearer $token', 'Accept': 'application/json'},
+    final response = await _authorizedRequest(
+      token,
+      (activeToken) => http
+          .delete(
+            Uri.parse('$baseUrl/projects/$projectId/files/$fileId'),
+            headers: _headers(activeToken),
+          )
+          .timeout(uploadTimeout),
     );
 
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception(
-        'Failed to delete PDF: '
-        '${response.statusCode} ${response.body}',
-      );
-    }
-  }
-
-  // =====================================
-  // RESPONSE HELPERS
-  // =====================================
-
-  static dynamic _decode(http.Response response) {
-    dynamic data;
-
-    if (response.bodyBytes.isEmpty) {
-      data = null;
-    } else {
-      final body = utf8.decode(response.bodyBytes);
-
-      try {
-        data = jsonDecode(body);
-      } on FormatException {
-        data = body;
-      }
-    }
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('API error ${response.statusCode}: $data');
-    }
-
-    return data;
+    _decode(response);
   }
 
   static List<dynamic> _asList(dynamic data) {
@@ -97,6 +72,28 @@ class ApiService {
     if (data == null) return [];
 
     throw Exception('Expected a list from server');
+  }
+
+  // =====================================
+  // RESPONSE HELPERS
+  // =====================================
+
+  static dynamic _decode(http.Response response) {
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(response.statusCode);
+    }
+
+    if (response.bodyBytes.isEmpty) {
+      return null;
+    }
+
+    final body = utf8.decode(response.bodyBytes);
+
+    try {
+      return jsonDecode(body);
+    } on FormatException {
+      return body;
+    }
   }
 
   // =====================================
@@ -210,7 +207,7 @@ class ApiService {
       final refreshed = await refreshAccessToken();
 
       if (refreshed == null) {
-        throw Exception('Session expired. Log in again.');
+        throw const SessionExpiredException();
       }
 
       activeToken = refreshed;
@@ -237,7 +234,7 @@ class ApiService {
     final refreshed = await refreshAccessToken();
 
     if (refreshed == null) {
-      throw Exception('Session expired. Log in again.');
+      throw const SessionExpiredException();
     }
 
     return send(refreshed);
@@ -373,6 +370,53 @@ class ApiService {
   static Future<dynamic> getMe(String token) async {
     final response = await _get('/me', token);
     return _decode(response);
+  }
+  // =====================================
+  // RESTORE SAVED SESSION
+  // =====================================
+
+  static Future<String?> restoreSession() async {
+    var accessToken = await AuthStorage.getToken();
+
+    final refreshToken = await AuthStorage.getRefreshToken();
+
+    if ((accessToken == null || accessToken.isEmpty) &&
+        (refreshToken == null || refreshToken.isEmpty)) {
+      return null;
+    }
+
+    Future<http.Response> validateToken(String token) {
+      return http
+          .get(Uri.parse('$baseUrl/me'), headers: _headers(token))
+          .timeout(defaultTimeout);
+    }
+
+    if (accessToken != null && accessToken.isNotEmpty) {
+      final response = await validateToken(accessToken);
+
+      if (response.statusCode != 401) {
+        _decode(response);
+        return accessToken;
+      }
+    }
+
+    accessToken = await refreshAccessToken();
+
+    if (accessToken == null || accessToken.isEmpty) {
+      await AuthStorage.clearTokens();
+      return null;
+    }
+
+    final response = await validateToken(accessToken);
+
+    if (response.statusCode == 401) {
+      await AuthStorage.clearTokens();
+      return null;
+    }
+
+    _decode(response);
+
+    return accessToken;
   }
 
   // =====================================

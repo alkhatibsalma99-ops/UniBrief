@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
+import '../services/error_handler.dart';
 
 class RegisterScreen extends StatefulWidget {
   final String selectedLanguage;
@@ -93,7 +94,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '${t('Registration failed', 'Registrierung fehlgeschlagen', 'فشل إنشاء الحساب')}: $error',
+            ErrorHandler.message(
+              error,
+              Localizations.localeOf(context).languageCode,
+            ),
           ),
           backgroundColor: Colors.red,
           duration: const Duration(seconds: 5),
