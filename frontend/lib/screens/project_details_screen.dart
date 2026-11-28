@@ -34,9 +34,47 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
 
   int? selectedFileId;
   int? selectedSubmissionFileId;
+  int? selectedReportFileId;
+
+  bool hasReportFile(int? id) {
+    return hasFileRole(id, ApiService.submissionRole) ||
+        hasFileRole(id, ApiService.unclassifiedRole);
+  }
 
   bool isLoadingFiles = false;
   bool isUploading = false;
+  bool isAssigningRole = false;
+  bool isDeletingFile = false;
+
+  bool get fileActionsBusy =>
+      isUploading ||
+      isAssigningRole ||
+      isDeletingFile ||
+      isLoadingFiles ||
+      isAnalyzing ||
+      isCheckingSubmission ||
+      isLoadingReport;
+
+  List<dynamic> filesByRole(String role) {
+    return files.where((file) {
+      return itemId(file) != null && ApiService.getFileRole(file) == role;
+    }).toList();
+  }
+
+  bool hasFileRole(int? id, String role) {
+    if (id == null) return false;
+
+    return filesByRole(role).any((file) => itemId(file) == id);
+  }
+
+  String fileName(dynamic file) {
+    if (file is Map) {
+      return (file['filename'] ?? file['name'] ?? 'PDF').toString();
+    }
+
+    return 'PDF';
+  }
+
   bool isAnalyzing = false;
   bool isLoadingRequirements = false;
   bool isGeneratingChecklist = false;
@@ -376,6 +414,8 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   // ==========================================
 
   Future<void> refreshAll() async {
+    if (fileActionsBusy) return;
+
     await Future.wait([
       loadFiles(),
       loadRequirements(),
@@ -403,14 +443,18 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       setState(() {
         files = result;
 
-        final ids = files.map(itemId).whereType<int>().toSet();
-
-        if (!ids.contains(selectedFileId)) {
-          selectedFileId = files.isEmpty ? null : itemId(files.first);
+        if (!hasFileRole(selectedFileId, ApiService.requirementsRole)) {
+          selectedFileId = null;
         }
 
-        if (!ids.contains(selectedSubmissionFileId)) {
+        if (!hasFileRole(selectedSubmissionFileId, ApiService.submissionRole)) {
           selectedSubmissionFileId = null;
+        }
+
+        if (!hasReportFile(selectedReportFileId)) {
+          selectedReportFileId = null;
+          submissionReport = null;
+          reportError = null;
         }
       });
     } catch (e) {
@@ -511,8 +555,14 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   // PDF UPLOAD
   // ==========================================
 
-  Future<void> uploadPdf() async {
-    if (isUploading) return;
+  Future<void> uploadPdf(String role) async {
+    if (fileActionsBusy) return;
+
+    if (!ApiService.assignableFileRoles.contains(role)) {
+      return;
+    }
+
+    setState(() => isUploading = true);
 
     try {
       final selectedFiles = await picker.FilePicker.pickFiles(
@@ -524,15 +574,13 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
         return;
       }
 
-      setState(() {
-        isUploading = true;
-        filesError = null;
-      });
+      setState(() => filesError = null);
 
       await ApiService.uploadPdf(
         widget.token,
         widget.projectId,
         selectedFiles.first,
+        fileRole: role,
       );
 
       if (!mounted) return;
@@ -559,7 +607,115 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     }
   }
 
+  Future<void> assignFileRole(int fileId, String role) async {
+    if (fileActionsBusy || filesError != null) return;
+
+    if (!ApiService.assignableFileRoles.contains(role)) {
+      return;
+    }
+
+    if (!hasFileRole(fileId, ApiService.unclassifiedRole)) {
+      return;
+    }
+
+    setState(() => isAssigningRole = true);
+
+    try {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(
+            t('Assign file role?', 'Dateityp zuweisen?', 'تحديد نوع الملف؟'),
+          ),
+          content: Text(
+            t(
+              'The assigned role cannot be changed later. '
+                  'Please select the correct file type.',
+              'Der zugewiesene Dateityp kann später '
+                  'nicht geändert werden.',
+              'لا يمكن تغيير نوع الملف بعد تصنيفه. '
+                  'يرجى التأكد من اختيار النوع الصحيح.',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: Text(t('Cancel', 'Abbrechen', 'إلغاء')),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: Text(
+                role == ApiService.requirementsRole
+                    ? t('Requirements', 'Anforderungen', 'المتطلبات')
+                    : t('Submission', 'Abgabe', 'التسليم'),
+              ),
+            ),
+          ],
+        ),
+      );
+
+      if (!mounted || confirmed != true) return;
+
+      await ApiService.updateFileRole(
+        widget.token,
+        widget.projectId,
+        fileId,
+        role,
+      );
+
+      if (!mounted) return;
+
+      await loadFiles();
+
+      if (!mounted) return;
+
+      showMessage(
+        t(
+          'File role assigned successfully',
+          'Dateityp erfolgreich zugewiesen',
+          'تم تصنيف الملف بنجاح',
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      if (e is ApiException && e.statusCode == 409) {
+        showMessage(
+          t(
+            'This file cannot be assigned to the selected '
+                'role because of its existing data or role.',
+            'Diese Datei kann aufgrund vorhandener Daten '
+                'oder ihres Dateityps nicht zugeordnet werden.',
+            'لا يمكن تصنيف الملف بهذا النوع بسبب '
+                'البيانات المرتبطة به أو تصنيفه الحالي.',
+          ),
+          error: true,
+        );
+      } else {
+        showMessage(friendlyError(e), error: true);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => isAssigningRole = false);
+      }
+    }
+  }
+
   Future<void> deletePdfFile(int fileId, String fileName) async {
+    if (fileActionsBusy || filesError != null) return;
+
+    setState(() => isDeletingFile = true);
+
+    try {
+      await _deletePdfFile(fileId, fileName);
+    } finally {
+      if (mounted) {
+        setState(() => isDeletingFile = false);
+      }
+    }
+  }
+
+  Future<void> _deletePdfFile(int fileId, String fileName) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -602,6 +758,10 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       setState(() {
         if (selectedSubmissionFileId == fileId) {
           selectedSubmissionFileId = null;
+        }
+
+        if (selectedReportFileId == fileId) {
+          selectedReportFileId = null;
         }
 
         submissionReport = null;
@@ -647,7 +807,12 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   Future<void> analyzePdf() async {
     final fileId = selectedFileId;
 
-    if (fileId == null || isAnalyzing) return;
+    if (fileId == null ||
+        fileActionsBusy ||
+        filesError != null ||
+        !hasFileRole(fileId, ApiService.requirementsRole)) {
+      return;
+    }
 
     setState(() => isAnalyzing = true);
 
@@ -748,12 +913,16 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   Future<void> checkSubmission() async {
     final fileId = selectedSubmissionFileId;
 
-    if (fileId == null || isCheckingSubmission) {
+    if (fileId == null ||
+        fileActionsBusy ||
+        filesError != null ||
+        !hasFileRole(fileId, ApiService.submissionRole)) {
       return;
     }
 
     setState(() {
       isCheckingSubmission = true;
+      selectedReportFileId = fileId;
       submissionReport = null;
       reportError = null;
     });
@@ -779,14 +948,18 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   }
 
   Future<void> loadReport() async {
-    final fileId = selectedSubmissionFileId;
+    final fileId = selectedReportFileId;
 
-    if (fileId == null || isLoadingReport) {
+    if (fileId == null ||
+        fileActionsBusy ||
+        filesError != null ||
+        !hasReportFile(fileId)) {
       return;
     }
 
     setState(() {
       isLoadingReport = true;
+      submissionReport = null;
       reportError = null;
     });
 
@@ -874,16 +1047,120 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
     );
   }
 
+  Widget reportFileSelector() {
+    final options = files.where((file) {
+      return hasReportFile(itemId(file));
+    }).toList();
+
+    if (options.isEmpty) {
+      return Text(
+        t(
+          'No files available for reports.',
+          'Keine Dateien für Berichte verfügbar.',
+          'لا توجد ملفات متاحة لعرض التقارير.',
+        ),
+        style: const TextStyle(color: Colors.grey),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          t('Saved Reports', 'Gespeicherte Berichte', 'التقارير المحفوظة'),
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+        ),
+
+        const SizedBox(height: 8),
+
+        Text(
+          t(
+            'View saved reports without running a new check.',
+            'Gespeicherte Berichte ohne erneute Prüfung anzeigen.',
+            'عرض التقارير المحفوظة دون إعادة الفحص.',
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        DropdownButtonFormField<int>(
+          key: ValueKey('report:$selectedReportFileId'),
+          initialValue: hasReportFile(selectedReportFileId)
+              ? selectedReportFileId
+              : null,
+          isExpanded: true,
+
+          decoration: InputDecoration(
+            labelText: t(
+              'Select report file',
+              'Berichtsdatei auswählen',
+              'اختيار ملف التقرير',
+            ),
+            border: const OutlineInputBorder(),
+          ),
+
+          items: options.map((file) {
+            final id = itemId(file)!;
+            final legacy =
+                ApiService.getFileRole(file) == ApiService.unclassifiedRole;
+
+            final suffix = legacy
+                ? t(' (Unclassified)', ' (Nicht zugeordnet)', ' (غير مصنف)')
+                : '';
+
+            return DropdownMenuItem<int>(
+              value: id,
+              child: Text(
+                fileName(file) + suffix,
+                overflow: TextOverflow.ellipsis,
+              ),
+            );
+          }).toList(),
+
+          onChanged: fileActionsBusy || filesError != null
+              ? null
+              : (id) {
+                  setState(() {
+                    selectedReportFileId = id;
+                    submissionReport = null;
+                    reportError = null;
+                  });
+                },
+        ),
+      ],
+    );
+  }
+
   Widget fileSelector({
+    required String role,
     required int? value,
     required ValueChanged<int?> onChanged,
   }) {
-    final options = files.where((file) => itemId(file) != null).toList();
+    final options = filesByRole(role);
+
+    if (options.isEmpty) {
+      return Text(
+        role == ApiService.requirementsRole
+            ? t(
+                'Upload or classify a requirements PDF first.',
+                'Lade zuerst eine Anforderungs-PDF hoch '
+                    'oder ordne eine Datei zu.',
+                'ارفعي أو صنّفي ملف المتطلبات أولاً.',
+              )
+            : t(
+                'Upload or classify a submission PDF first.',
+                'Lade zuerst eine Abgabe-PDF hoch '
+                    'oder ordne eine Datei zu.',
+                'ارفعي أو صنّفي ملف التسليم أولاً.',
+              ),
+        style: const TextStyle(color: Colors.grey),
+      );
+    }
 
     final validIds = options.map(itemId).whereType<int>().toSet();
 
     return DropdownButtonFormField<int>(
-      key: ValueKey(value),
+      key: ValueKey('$role:$value'),
       initialValue: validIds.contains(value) ? value : null,
       isExpanded: true,
       decoration: InputDecoration(
@@ -906,7 +1183,142 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
           child: Text(name, overflow: TextOverflow.ellipsis),
         );
       }).toList(),
-      onChanged: onChanged,
+      onChanged: fileActionsBusy || filesError != null ? null : onChanged,
+    );
+  }
+
+  // ==========================================
+  // FILE ROLE GROUP
+  // ==========================================
+
+  Widget fileRoleGroup({
+    required String role,
+    required String title,
+    required String description,
+    required IconData icon,
+    required Color color,
+    String? uploadLabel,
+  }) {
+    final roleFiles = filesByRole(role);
+
+    final isLegacy = role == ApiService.unclassifiedRole;
+
+    return Card(
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 16),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: color),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(description),
+
+            if (uploadLabel != null) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: fileActionsBusy ? null : () => uploadPdf(role),
+                  icon: const Icon(Icons.upload_file),
+                  label: Text(uploadLabel),
+                ),
+              ),
+            ],
+
+            const SizedBox(height: 12),
+
+            if (roleFiles.isEmpty)
+              Text(
+                t(
+                  'No files in this category.',
+                  'Keine Dateien in dieser Kategorie.',
+                  'لا توجد ملفات في هذا القسم.',
+                ),
+              ),
+
+            ...roleFiles.map((file) {
+              final id = itemId(file);
+              final name = fileName(file);
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Divider(),
+
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.picture_as_pdf, color: color),
+                    title: Text(name),
+                    subtitle: Text('ID: ${id ?? "-"}'),
+                    trailing: IconButton(
+                      tooltip: t('Delete PDF', 'PDF löschen', 'حذف ملف PDF'),
+                      icon: const Icon(Icons.delete_outline, color: Colors.red),
+                      onPressed: id == null || fileActionsBusy
+                          ? null
+                          : () => deletePdfFile(id, name),
+                    ),
+                  ),
+
+                  if (isLegacy && id != null)
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        OutlinedButton(
+                          onPressed: fileActionsBusy
+                              ? null
+                              : () => assignFileRole(
+                                  id,
+                                  ApiService.requirementsRole,
+                                ),
+                          child: Text(
+                            t(
+                              'As requirements',
+                              'Als Anforderungen',
+                              'ملف متطلبات',
+                            ),
+                          ),
+                        ),
+                        OutlinedButton(
+                          onPressed: fileActionsBusy
+                              ? null
+                              : () => assignFileRole(
+                                  id,
+                                  ApiService.submissionRole,
+                                ),
+                          child: Text(
+                            t('As submission', 'Als Abgabe', 'ملف تسليم'),
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              );
+            }),
+          ],
+        ),
+      ),
     );
   }
 
@@ -979,69 +1391,95 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  ElevatedButton.icon(
-                    onPressed: isUploading ? null : uploadPdf,
-                    icon: const Icon(Icons.upload_file),
-                    label: Text(
-                      isUploading
-                          ? t(
-                              'Uploading...',
-                              'Wird hochgeladen...',
-                              'جارٍ الرفع...',
-                            )
-                          : t('Upload PDF', 'PDF hochladen', 'رفع ملف PDF'),
-                    ),
-                  ),
-
-                  const SizedBox(height: 16),
+                  if (isUploading || isAssigningRole || isDeletingFile) ...[
+                    const LinearProgressIndicator(),
+                    const SizedBox(height: 12),
+                  ],
 
                   loadingOrError(
                     loading: isLoadingFiles,
                     error: filesError,
-                    child: files.isEmpty
-                        ? Text(
-                            t(
-                              'No files uploaded yet.',
-                              'Noch keine Dateien hochgeladen.',
-                              'لم يتم رفع ملفات بعد.',
-                            ),
-                          )
-                        : Column(
-                            children: files.map((file) {
-                              final id = itemId(file);
-
-                              final name = file is Map
-                                  ? (file['filename'] ?? file['name'] ?? 'PDF')
-                                        .toString()
-                                  : 'PDF';
-
-                              return ListTile(
-                                leading: const Icon(
-                                  Icons.picture_as_pdf,
-                                  color: Colors.red,
-                                ),
-                                title: Text(name),
-                                subtitle: Text('ID: ${id ?? "-"}'),
-
-                                // زر حذف ملف PDF
-                                trailing: IconButton(
-                                  tooltip: t(
-                                    'Delete PDF',
-                                    'PDF löschen',
-                                    'حذف ملف PDF',
-                                  ),
-                                  icon: const Icon(
-                                    Icons.delete_outline,
-                                    color: Colors.red,
-                                  ),
-                                  onPressed: id == null
-                                      ? null
-                                      : () => deletePdfFile(id, name),
-                                ),
-                              );
-                            }).toList(),
+                    child: Column(
+                      children: [
+                        fileRoleGroup(
+                          role: ApiService.requirementsRole,
+                          title: t(
+                            'Requirements Documents',
+                            'Anforderungsdokumente',
+                            'ملفات المتطلبات',
                           ),
+                          description: t(
+                            'Upload assignment instructions '
+                                'and requirements for AI analysis.',
+                            'Lade Aufgabenstellungen und '
+                                'Anforderungen zur KI-Analyse hoch.',
+                            'ارفعي تعليمات الأستاذ والمتطلبات '
+                                'لتحليلها بالذكاء الاصطناعي.',
+                          ),
+                          icon: Icons.description_outlined,
+                          color: Colors.deepPurple,
+                          uploadLabel: t(
+                            'Upload Requirements PDF',
+                            'Anforderungs-PDF hochladen',
+                            'رفع ملف المتطلبات PDF',
+                          ),
+                        ),
+
+                        fileRoleGroup(
+                          role: ApiService.submissionRole,
+                          title: t(
+                            'Submission Documents',
+                            'Abgabedokumente',
+                            'ملفات الحل والتسليم',
+                          ),
+                          description: t(
+                            'Upload your solution to check '
+                                'it against the requirements.',
+                            'Lade deine Lösung hoch, um sie '
+                                'mit den Anforderungen abzugleichen.',
+                            'ارفعي الحل الخاص بك لفحصه '
+                                'ومقارنته بالمتطلبات.',
+                          ),
+                          icon: Icons.fact_check_outlined,
+                          color: Colors.teal,
+                          uploadLabel: t(
+                            'Upload Submission PDF',
+                            'Abgabe-PDF hochladen',
+                            'رفع ملف التسليم PDF',
+                          ),
+                        ),
+
+                        if (filesByRole(ApiService.unclassifiedRole).isNotEmpty)
+                          fileRoleGroup(
+                            role: ApiService.unclassifiedRole,
+                            title: t(
+                              'Unclassified Files',
+                              'Nicht zugeordnete Dateien',
+                              'الملفات غير المصنفة',
+                            ),
+                            description: t(
+                              'Assign a role to your existing '
+                                  'PDF files before using them.',
+                              'Ordne vorhandene PDF-Dateien '
+                                  'einem Dateityp zu.',
+                              'حددي نوع الملفات القديمة '
+                                  'قبل استخدامها.',
+                            ),
+                            icon: Icons.folder_outlined,
+                            color: Colors.orange.shade800,
+                          ),
+                      ],
+                    ),
                   ),
+
+                  if (filesError != null)
+                    TextButton.icon(
+                      onPressed: fileActionsBusy ? null : loadFiles,
+                      icon: const Icon(Icons.refresh),
+                      label: Text(
+                        t('Retry', 'Erneut versuchen', 'إعادة المحاولة'),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -1060,6 +1498,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   fileSelector(
+                    role: ApiService.requirementsRole,
                     value: selectedFileId,
                     onChanged: (id) {
                       setState(() {
@@ -1071,7 +1510,13 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                   const SizedBox(height: 12),
 
                   ElevatedButton.icon(
-                    onPressed: isAnalyzing || selectedFileId == null
+                    onPressed:
+                        fileActionsBusy ||
+                            filesError != null ||
+                            !hasFileRole(
+                              selectedFileId,
+                              ApiService.requirementsRole,
+                            )
                         ? null
                         : analyzePdf,
                     icon: const Icon(Icons.auto_awesome),
@@ -1241,9 +1686,9 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                   const SizedBox(height: 12),
 
                   OutlinedButton.icon(
-                    onPressed: isUploading || isCheckingSubmission
+                    onPressed: fileActionsBusy
                         ? null
-                        : uploadPdf,
+                        : () => uploadPdf(ApiService.submissionRole),
                     icon: const Icon(Icons.upload_file),
                     label: Text(
                       isUploading
@@ -1263,11 +1708,14 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                   const SizedBox(height: 12),
 
                   fileSelector(
+                    role: ApiService.submissionRole,
                     value: selectedSubmissionFileId,
                     onChanged: (id) {
                       setState(() {
                         selectedSubmissionFileId = id;
+                        selectedReportFileId = id;
                         submissionReport = null;
+                        reportError = null;
                       });
                     },
                   ),
@@ -1275,12 +1723,12 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
 
                   OutlinedButton.icon(
                     onPressed:
-                        selectedSubmissionFileId == null ||
-                            isCheckingSubmission ||
-                            isUploading ||
-                            isLoadingFiles ||
-                            isAnalyzing ||
-                            isLoadingReport
+                        fileActionsBusy ||
+                            filesError != null ||
+                            !hasFileRole(
+                              selectedSubmissionFileId,
+                              ApiService.submissionRole,
+                            )
                         ? null
                         : () async {
                             final fileId = selectedSubmissionFileId;
@@ -1318,7 +1766,12 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
 
                   ElevatedButton.icon(
                     onPressed:
-                        isCheckingSubmission || selectedSubmissionFileId == null
+                        fileActionsBusy ||
+                            filesError != null ||
+                            !hasFileRole(
+                              selectedSubmissionFileId,
+                              ApiService.submissionRole,
+                            )
                         ? null
                         : checkSubmission,
                     icon: const Icon(Icons.verified),
@@ -1378,9 +1831,15 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  reportFileSelector(),
+
+                  const SizedBox(height: 12),
+
                   ElevatedButton.icon(
                     onPressed:
-                        isLoadingReport || selectedSubmissionFileId == null
+                        fileActionsBusy ||
+                            filesError != null ||
+                            !hasReportFile(selectedReportFileId)
                         ? null
                         : loadReport,
                     icon: const Icon(Icons.summarize_outlined),

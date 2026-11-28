@@ -3,6 +3,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
+from typing import Annotated
 
 from fastapi import (
     FastAPI,
@@ -10,6 +11,7 @@ from fastapi import (
     HTTPException,
     UploadFile,
     File,
+    Form,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -200,6 +202,63 @@ def get_owned_project_file(
             models.ProjectFile.id == file_id,
             models.ProjectFile.project_id == project_id,
         )
+        .first()
+    )
+
+    if db_file is None:
+        raise HTTPException(
+            status_code=404,
+            detail="File not found",
+        )
+
+    return db_file
+
+
+
+
+# ==================================================
+# FILE ROLE VALIDATION
+# ==================================================
+
+def ensure_file_role(
+    db_file: models.ProjectFile,
+    expected_role: schemas.FileRole,
+):
+    allowed_roles = {
+        expected_role.value,
+        schemas.FileRole.UNCLASSIFIED.value,
+    }
+
+    if db_file.file_role not in allowed_roles:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"This operation requires a "
+                f"{expected_role.value} PDF."
+            ),
+        )
+
+
+def lock_owned_project_file(
+    project_id: int,
+    file_id: int,
+    db: Session,
+    current_user: models.User,
+):
+    get_owned_project(
+        project_id,
+        db,
+        current_user,
+    )
+
+    db_file = (
+        db.query(models.ProjectFile)
+        .filter(
+            models.ProjectFile.id == file_id,
+            models.ProjectFile.project_id == project_id,
+        )
+        .populate_existing()
+        .with_for_update()
         .first()
     )
 
@@ -941,7 +1000,10 @@ def delete_project(
 # GET PROJECT FILES
 # ==================================================
 
-@app.get("/projects/{project_id}/files")
+@app.get(
+    "/projects/{project_id}/files",
+    response_model=list[schemas.ProjectFileResponse],
+)
 def get_project_files(
     project_id: int,
     db: Session = Depends(get_db),
@@ -1142,6 +1204,11 @@ def extract_requirements(
         current_user,
     )
 
+    ensure_file_role(
+        db_file,
+        schemas.FileRole.REQUIREMENTS,
+    )
+
     extracted_text = read_pdf_text(db_file)
 
     keywords = [
@@ -1203,6 +1270,11 @@ def analyze_file_with_ai(
         current_user,
     )
 
+    ensure_file_role(
+        db_file,
+        schemas.FileRole.REQUIREMENTS,
+    )
+
     extracted_text = read_pdf_text(db_file)
 
     if not extracted_text.strip():
@@ -1232,6 +1304,19 @@ def analyze_file_with_ai(
             status_code=500,
             detail="AI analysis failed",
         ) from error
+
+    # Recheck the role before saving AI results.
+    db_file = lock_owned_project_file(
+        project_id,
+        file_id,
+        db,
+        current_user,
+    )
+
+    ensure_file_role(
+        db_file,
+        schemas.FileRole.REQUIREMENTS,
+    )
 
     saved_requirements = []
 
@@ -1493,6 +1578,11 @@ def check_submission(
         current_user,
     )
 
+    ensure_file_role(
+        db_file,
+        schemas.FileRole.SUBMISSION,
+    )
+
     submission_text = read_pdf_text(db_file)
 
     if not submission_text.strip():
@@ -1546,6 +1636,19 @@ def check_submission(
             status_code=500,
             detail="Submission check failed",
         ) from error
+
+    # Recheck the role before saving results.
+    db_file = lock_owned_project_file(
+        project_id,
+        file_id,
+        db,
+        current_user,
+    )
+
+    ensure_file_role(
+        db_file,
+        schemas.FileRole.SUBMISSION,
+    )
 
     db.query(models.SubmissionResult).filter(
         models.SubmissionResult.project_id == project_id,
@@ -1890,6 +1993,10 @@ def upload_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
+    file_role: Annotated[
+        schemas.FileRole,
+        Form(),
+    ] = schemas.FileRole.UNCLASSIFIED,
 ):
     get_owned_project(project_id, db, current_user)
 
@@ -1949,6 +2056,7 @@ def upload_file(
         project_id=project_id,
         filename=original_filename,
         file_path=f"r2://{object_key}",
+        file_role=file_role.value,
     )
 
     try:
@@ -1990,8 +2098,108 @@ def upload_file(
         "project_id": db_file.project_id,
         "filename": db_file.filename,
         "file_path": db_file.file_path,
+        "file_role": db_file.file_role,
         "uploaded_at": db_file.uploaded_at,
     }
+
+
+
+
+# ==================================================
+# ASSIGN FILE ROLE
+# ==================================================
+
+@app.patch(
+    "/projects/{project_id}/files/{file_id}/role",
+    response_model=schemas.ProjectFileResponse,
+)
+def update_file_role(
+    project_id: int,
+    file_id: int,
+    update: schemas.ProjectFileRoleUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    db_file = lock_owned_project_file(
+        project_id,
+        file_id,
+        db,
+        current_user,
+    )
+
+    requested_role = update.file_role.value
+
+    # Repeated requests with the same role are allowed.
+    if db_file.file_role == requested_role:
+        return db_file
+
+    # Do not change already classified files.
+    if (
+        db_file.file_role
+        != schemas.FileRole.UNCLASSIFIED.value
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="File role is already assigned",
+        )
+
+    has_requirements = (
+        db.query(models.Requirement.id)
+        .filter(
+            models.Requirement.project_id == project_id,
+            models.Requirement.file_id == file_id,
+        )
+        .first()
+        is not None
+    )
+
+    has_submission_results = (
+        db.query(models.SubmissionResult.id)
+        .filter(
+            models.SubmissionResult.project_id == project_id,
+            models.SubmissionResult.file_id == file_id,
+        )
+        .first()
+        is not None
+    )
+
+    # Protect existing requirements.
+    if (
+        requested_role == schemas.FileRole.SUBMISSION.value
+        and has_requirements
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This file contains existing requirements "
+                "and cannot be assigned as a submission."
+            ),
+        )
+
+    # Protect existing submission results.
+    if (
+        requested_role == schemas.FileRole.REQUIREMENTS.value
+        and has_submission_results
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This file contains existing submission "
+                "results and cannot be assigned as requirements."
+            ),
+        )
+
+    db_file.file_role = requested_role
+
+    try:
+        db.commit()
+        db.refresh(db_file)
+
+    except Exception:
+        db.rollback()
+        raise
+
+    return db_file
 
 
 # ==================================================

@@ -1,4 +1,7 @@
 
+from datetime import datetime
+from enum import Enum
+
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -91,3 +94,47 @@ class ProjectUpdate(BaseModel):
 
 class ChecklistUpdate(BaseModel):
     completed: bool
+
+
+# ==========================================
+# NEW: FILE ROLE
+# ==========================================
+
+class FileRole(str, Enum):
+    REQUIREMENTS = "requirements"
+    SUBMISSION = "submission"
+    UNCLASSIFIED = "unclassified"
+
+
+# ==========================================
+# NEW: ASSIGNABLE FILE ROLE
+# ==========================================
+
+class AssignableFileRole(str, Enum):
+    REQUIREMENTS = "requirements"
+    SUBMISSION = "submission"
+
+
+# ==========================================
+# NEW: PROJECT FILE RESPONSE
+# ==========================================
+
+class ProjectFileResponse(BaseModel):
+    id: int
+    project_id: int
+    filename: str
+    file_path: str
+    file_role: FileRole
+    uploaded_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
+
+# ==========================================
+# NEW: FILE ROLE UPDATE
+# ==========================================
+
+class ProjectFileRoleUpdate(BaseModel):
+    file_role: AssignableFileRole

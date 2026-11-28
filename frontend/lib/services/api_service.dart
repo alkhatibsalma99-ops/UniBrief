@@ -12,8 +12,10 @@ class ApiService {
   // CONFIGURATION
   // =====================================
 
-  static const String baseUrl = 'https://unibrief-1.onrender.com';
-
+  static const String baseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'https://unibrief-1.onrender.com',
+  );
   static const Duration defaultTimeout = Duration(seconds: 45);
 
   static const Duration aiTimeout = Duration(minutes: 3);
@@ -522,29 +524,66 @@ class ApiService {
   // PROJECT FILES
   // =====================================
 
+  static const String requirementsRole = 'requirements';
+  static const String submissionRole = 'submission';
+  static const String unclassifiedRole = 'unclassified';
+
+  static const Set<String> assignableFileRoles = {
+    requirementsRole,
+    submissionRole,
+  };
+
+  static String getFileRole(dynamic file) {
+    if (file is Map) {
+      final role = file['file_role'];
+
+      if (role == requirementsRole || role == submissionRole) {
+        return role as String;
+      }
+    }
+
+    return unclassifiedRole;
+  }
+
   static Future<List<dynamic>> getProjectFiles(
     String token,
     int projectId, {
     bool forceRefresh = false,
-  }) {
-    return _getList(
+  }) async {
+    final files = await _getList(
       '/projects/$projectId/files',
       token,
       forceRefresh: forceRefresh,
     );
+
+    return files.map((file) {
+      if (file is! Map) {
+        throw const FormatException('Invalid project file response');
+      }
+
+      return {
+        ...Map<String, dynamic>.from(file),
+        'file_role': getFileRole(file),
+      };
+    }).toList();
   }
 
   // =====================================
-  // UPLOAD PDF
+  // UPLOAD PDF WITH FILE ROLE
   // =====================================
 
   static Future<dynamic> uploadPdf(
     String token,
     int projectId,
-    picker.PlatformFile file,
-  ) async {
+    picker.PlatformFile file, {
+    String? fileRole,
+  }) async {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
       throw Exception('Please select a PDF file');
+    }
+
+    if (fileRole != null && !assignableFileRoles.contains(fileRole)) {
+      throw ArgumentError('Invalid file role');
     }
 
     final bytes = await file.readAsBytes();
@@ -557,18 +596,54 @@ class ApiService {
 
       request.headers['Authorization'] = 'Bearer $activeToken';
 
+      // Send the selected file role.
+      if (fileRole != null) {
+        request.fields['file_role'] = fileRole;
+      }
+
       request.files.add(
         http.MultipartFile.fromBytes('file', bytes, filename: file.name),
       );
 
-      final streamedResponse = await http.Client()
-          .send(request)
-          .timeout(uploadTimeout);
+      final client = http.Client();
 
-      return http.Response.fromStream(streamedResponse).timeout(uploadTimeout);
+      try {
+        final streamedResponse = await client
+            .send(request)
+            .timeout(uploadTimeout);
+
+        return await http.Response.fromStream(
+          streamedResponse,
+        ).timeout(uploadTimeout);
+      } finally {
+        client.close();
+      }
     }
 
     final response = await _authorizedRequest(token, sendUpload);
+
+    return _decode(response);
+  }
+
+  // =====================================
+  // UPDATE FILE ROLE
+  // =====================================
+
+  static Future<dynamic> updateFileRole(
+    String token,
+    int projectId,
+    int fileId,
+    String fileRole,
+  ) async {
+    if (!assignableFileRoles.contains(fileRole)) {
+      throw ArgumentError('Invalid file role');
+    }
+
+    final response = await _patch(
+      '/projects/$projectId/files/$fileId/role',
+      token,
+      body: {'file_role': fileRole},
+    );
 
     return _decode(response);
   }

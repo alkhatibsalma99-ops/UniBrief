@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     DateTime,
     Boolean,
+    CheckConstraint,
 )
 
 from sqlalchemy.orm import relationship
@@ -119,6 +120,15 @@ class Project(Base):
 class ProjectFile(Base):
     __tablename__ = "project_files"
 
+    # NEW: Validate file roles at database level
+    __table_args__ = (
+        CheckConstraint(
+            "file_role IN "
+            "('requirements', 'submission', 'unclassified')",
+            name="ck_project_files_file_role",
+        ),
+    )
+
     id = Column(
         Integer,
         primary_key=True,
@@ -141,6 +151,14 @@ class ProjectFile(Base):
 
     file_path = Column(
         String(500),
+        nullable=False,
+    )
+
+    # NEW: File role
+    file_role = Column(
+        String(20),
+        default="unclassified",
+        server_default="unclassified",
         nullable=False,
     )
 
