@@ -52,3 +52,21 @@ def protect_external_storage():
         side_effect=block_r2_connection,
     ):
         yield
+# Block real AI requests during tests.
+
+def block_ai_request(*args, **kwargs):
+
+    raise RuntimeError(
+        "Real AI requests are forbidden during tests."
+    )
+
+
+@pytest.fixture(autouse=True)
+def protect_external_ai():
+
+    with patch(
+        "app.ai_service.client.responses.create",
+        side_effect=block_ai_request,
+    ):
+
+        yield

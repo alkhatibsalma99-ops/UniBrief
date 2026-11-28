@@ -5,12 +5,12 @@ from sqlalchemy import (
     Column,
     Integer,
     String,
+    Text,  # NEW
     ForeignKey,
     DateTime,
     Boolean,
     CheckConstraint,
 )
-
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -225,6 +225,34 @@ class Requirement(Base):
         nullable=False,
     )
 
+    # ======================================
+    # SOURCE EVIDENCE
+    # ======================================
+
+    source_page = Column(
+        Integer,
+        nullable=True,
+    )
+
+    source_evidence = Column(
+        Text,
+        nullable=True,
+    )
+
+    evidence_verified = Column(
+        Boolean,
+        nullable=True,
+    )
+
+    pipeline_version = Column(
+        String(20),
+        nullable=True,
+    )
+
+    # ======================================
+    # RELATIONSHIPS
+    # ======================================
+
     checklist_items = relationship(
         "ChecklistItem",
         cascade="all, delete-orphan",
@@ -278,6 +306,7 @@ class ChecklistItem(Base):
 # SUBMISSION RESULT
 # ==========================================
 
+
 class SubmissionResult(Base):
     __tablename__ = "submission_results"
 
@@ -323,6 +352,36 @@ class SubmissionResult(Base):
         String(2000),
         nullable=False,
     )
+
+    # ======================================
+    # NEW: SUBMISSION EVIDENCE
+    # ======================================
+
+    source_page = Column(
+        Integer,
+        nullable=True,
+    )
+
+    source_evidence = Column(
+        Text,
+        nullable=True,
+    )
+
+    evidence_verified = Column(
+        Boolean,
+        nullable=True,
+    )
+
+    suggested_improvement = Column(
+        Text,
+        nullable=True,
+    )
+
+    pipeline_version = Column(
+        String(20),
+        nullable=True,
+    )
+
 
 
 # ==========================================

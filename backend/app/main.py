@@ -59,6 +59,9 @@ from app.ai_rate_limit import (
     ai_request_slot,
     delete_user_ai_data,
 )
+from app.ai_service import extract_requirements_with_evidence
+
+from app.requirement_pipeline import process_requirements
 
 
 
@@ -319,7 +322,8 @@ def get_file_bytes(db_file):
 # PDF TEXT EXTRACTION
 # ==================================================
 
-def read_pdf_text(db_file):
+def read_pdf_pages(db_file) -> list[dict]:
+
     if not db_file.filename.lower().endswith(".pdf"):
         raise HTTPException(
             status_code=400,
@@ -330,26 +334,49 @@ def read_pdf_text(db_file):
 
     try:
         reader = PdfReader(BytesIO(pdf_bytes))
-        pages_text = []
 
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                pages_text.append(page_text)
+        pages = []
 
-        return "\n".join(pages_text)
+        for page_number, page in enumerate(
+            reader.pages,
+            start=1,
+        ):
+            page_text = page.extract_text() or ""
+
+            pages.append(
+                {
+                    "page_number": page_number,
+                    "text": page_text,
+                }
+            )
+
+        return pages
 
     except Exception as error:
         print(
             "PDF ERROR:",
             type(error).__name__,
         )
+
         raise HTTPException(
             status_code=422,
             detail="Could not extract text from PDF",
         ) from error
 
 
+# ==================================================
+# BACKWARD COMPATIBLE PDF TEXT EXTRACTION
+# ==================================================
+
+def read_pdf_text(db_file) -> str:
+
+    pages = read_pdf_pages(db_file)
+
+    return "\n".join(
+        page["text"]
+        for page in pages
+        if page["text"]
+    )
 # ==================================================
 # HEALTH CHECK
 # ==================================================
@@ -1254,6 +1281,7 @@ def extract_requirements(
 # ==================================================
 
 
+
 @app.post(
     "/projects/{project_id}/files/{file_id}/analyze"
 )
@@ -1263,6 +1291,11 @@ def analyze_file_with_ai(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+
+    # ==========================================
+    # STEP 1: OWNERSHIP CHECK
+    # ==========================================
+
     db_file = get_owned_project_file(
         project_id,
         file_id,
@@ -1275,28 +1308,60 @@ def analyze_file_with_ai(
         schemas.FileRole.REQUIREMENTS,
     )
 
-    extracted_text = read_pdf_text(db_file)
+    # ==========================================
+    # STEP 2: PAGE-AWARE PDF EXTRACTION
+    # ==========================================
 
-    if not extracted_text.strip():
+    pages = read_pdf_pages(db_file)
+
+    if not pages or not any(
+        page["text"].strip()
+        for page in pages
+    ):
+
         raise HTTPException(
             status_code=400,
             detail="No text could be extracted from PDF",
         )
 
-    # Protect only the expensive AI operation.
-    # Existing PDF extraction and database logic remain.
+    # ==========================================
+    # STEP 3: AI REQUIREMENT EXTRACTION V3
+    # ==========================================
+
     try:
+
         with ai_request_slot(current_user.id):
-            ai_result = extract_requirements_with_ai(
-                extracted_text
+
+            ai_result = extract_requirements_with_evidence(
+                pages
             )
 
+        # ======================================
+        # STEP 4: COMBINE ALL AI REQUIREMENTS
+        # ======================================
+
+        extracted_requirements = (
+            ai_result["requirements"]
+            + ai_result["unverified_requirements"]
+        )
+
+        # ======================================
+        # STEP 5: REQUIREMENT QUALITY PIPELINE
+        # ======================================
+
+        pipeline_result = process_requirements(
+            requirements=extracted_requirements,
+            pages=pages,
+        )
+
     except HTTPException:
+
         raise
 
     except Exception as error:
+
         print(
-            "AI ERROR:",
+            "AI PIPELINE ERROR:",
             type(error).__name__,
         )
 
@@ -1305,7 +1370,49 @@ def analyze_file_with_ai(
             detail="AI analysis failed",
         ) from error
 
-    # Recheck the role before saving AI results.
+    # ==========================================
+    # STEP 6: PRESERVE DISTINCT SOURCE EVIDENCE
+    # ==========================================
+
+    def evidence_key(item):
+
+        return (
+            item["title"],
+            item["description"],
+            item["priority"],
+            item["source_page"],
+            item["source_evidence"],
+        )
+
+    requirements_to_save = list(
+        pipeline_result["requirements"]
+    )
+
+    known_evidence = {
+        evidence_key(item)
+        for item in requirements_to_save
+    }
+
+    preserved_source_count = 0
+
+    for duplicate_info in pipeline_result["exact_duplicates"]:
+
+        duplicate = duplicate_info["duplicate"]
+
+        key = evidence_key(duplicate)
+
+        if key not in known_evidence:
+
+            requirements_to_save.append(duplicate)
+
+            known_evidence.add(key)
+
+            preserved_source_count += 1
+
+    # ==========================================
+    # STEP 7: RECHECK OWNERSHIP AND FILE ROLE
+    # ==========================================
+
     db_file = lock_owned_project_file(
         project_id,
         file_id,
@@ -1318,41 +1425,168 @@ def analyze_file_with_ai(
         schemas.FileRole.REQUIREMENTS,
     )
 
+    # ==========================================
+    # STEP 8: LOAD EXISTING REQUIREMENTS
+    # ==========================================
+
+    existing_requirements = (
+        db.query(models.Requirement)
+        .filter(
+            models.Requirement.project_id == project_id,
+            models.Requirement.file_id == file_id,
+        )
+        .order_by(models.Requirement.id)
+        .all()
+    )
+
+    def serialize_requirement(requirement):
+
+        return {
+            "id": requirement.id,
+            "project_id": requirement.project_id,
+            "file_id": requirement.file_id,
+            "title": requirement.title,
+            "description": requirement.description,
+            "priority": requirement.priority,
+            "source_page": requirement.source_page,
+            "source_evidence": requirement.source_evidence,
+            "evidence_verified": requirement.evidence_verified,
+            "pipeline_version": requirement.pipeline_version,
+        }
+
+    existing_by_key = {}
+
+    for requirement in existing_requirements:
+
+        if requirement.evidence_verified is True:
+
+            key = evidence_key(
+                serialize_requirement(requirement)
+            )
+
+            existing_by_key.setdefault(
+                key,
+                requirement,
+            )
+
+    # ==========================================
+    # STEP 9: SAVE VALIDATED REQUIREMENTS
+    # ==========================================
+
     saved_requirements = []
 
-    for item in ai_result["requirements"]:
-        db_requirement = models.Requirement(
-            project_id=project_id,
-            file_id=file_id,
-            title=item["title"],
-            description=item["description"],
-            priority=item["priority"],
+    inserted_count = 0
+
+    reused_count = 0
+
+    try:
+
+        for item in requirements_to_save:
+
+            key = evidence_key(item)
+
+            existing = existing_by_key.get(key)
+
+            # Avoid inserting identical requirements
+            # during repeated analysis.
+
+            if existing is not None:
+
+                saved_requirements.append(
+                    serialize_requirement(existing)
+                )
+
+                reused_count += 1
+
+                continue
+
+            db_requirement = models.Requirement(
+                project_id=project_id,
+                file_id=file_id,
+                title=item["title"],
+                description=item["description"],
+                priority=item["priority"],
+                source_page=item["source_page"],
+                source_evidence=item["source_evidence"],
+                evidence_verified=item["evidence_verified"],
+                pipeline_version=pipeline_result[
+                    "pipeline_version"
+                ],
+            )
+
+            db.add(db_requirement)
+
+            db.flush()
+
+            existing_by_key[key] = db_requirement
+
+            saved_requirements.append(
+                serialize_requirement(db_requirement)
+            )
+
+            inserted_count += 1
+
+        db.commit()
+
+    except Exception as error:
+
+        db.rollback()
+
+        print(
+            "REQUIREMENT SAVE ERROR:",
+            type(error).__name__,
         )
 
-        db.add(db_requirement)
-        db.flush()
+        raise HTTPException(
+            status_code=500,
+            detail="Could not save requirements",
+        ) from error
 
-        saved_requirements.append({
-            "id": db_requirement.id,
-            "project_id": db_requirement.project_id,
-            "file_id": db_requirement.file_id,
-            "title": db_requirement.title,
-            "description": db_requirement.description,
-            "priority": db_requirement.priority,
-        })
-
-    db.commit()
+    # ==========================================
+    # STEP 10: RETURN ANALYSIS RESULTS
+    # ==========================================
 
     return {
         "project_id": project_id,
         "file_id": file_id,
+
+        # Existing API response field
         "requirements": saved_requirements,
+
+        # New quality information
+        "analysis": {
+            "pipeline_version": pipeline_result[
+                "pipeline_version"
+            ],
+            "status": pipeline_result["status"],
+            "review_required": pipeline_result[
+                "review_required"
+            ],
+            "statistics": pipeline_result["statistics"],
+            "priority_counts": pipeline_result[
+                "priority_counts"
+            ],
+            "performance": pipeline_result[
+                "performance"
+            ],
+            "invalid_requirements": pipeline_result[
+                "invalid_requirements"
+            ],
+            "exact_duplicates": pipeline_result[
+                "exact_duplicates"
+            ],
+            "possible_duplicates": pipeline_result[
+                "possible_duplicates"
+            ],
+            "persistence": {
+                "inserted_count": inserted_count,
+                "reused_count": reused_count,
+                "returned_count": len(saved_requirements),
+                "preserved_source_count": preserved_source_count,
+            },
+        },
     }
 
-
-# ==================================================
-# GET SAVED REQUIREMENTS
-# ==================================================
 
 @app.get("/projects/{project_id}/requirements")
 def get_project_requirements(
@@ -1360,19 +1594,33 @@ def get_project_requirements(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+
+    # ==========================================
+    # STEP 1: VERIFY PROJECT OWNERSHIP
+    # ==========================================
+
     get_owned_project(
         project_id,
         db,
         current_user,
     )
 
+    # ==========================================
+    # STEP 2: LOAD SAVED REQUIREMENTS
+    # ==========================================
+
     requirements = (
         db.query(models.Requirement)
         .filter(
             models.Requirement.project_id == project_id
         )
+        .order_by(models.Requirement.id.asc())
         .all()
     )
+
+    # ==========================================
+    # STEP 3: RETURN REQUIREMENTS WITH EVIDENCE
+    # ==========================================
 
     return [
         {
@@ -1382,13 +1630,126 @@ def get_project_requirements(
             "title": requirement.title,
             "description": requirement.description,
             "priority": requirement.priority,
+
+            # Source evidence
+            "source_page": requirement.source_page,
+            "source_evidence": requirement.source_evidence,
+            "evidence_verified": requirement.evidence_verified,
+
+            # Pipeline metadata
+            "pipeline_version": requirement.pipeline_version,
         }
         for requirement in requirements
     ]
 
 
+
+
 # ==================================================
-# GENERATE CHECKLIST
+# SMART CHECKLIST V2 - HELPERS
+# ==================================================
+
+def serialize_checklist_item(item, requirement, source_file):
+
+    return {
+        "id": item.id,
+        "project_id": item.project_id,
+        "requirement_id": item.requirement_id,
+        "title": item.title,
+        "completed": bool(item.completed),
+
+        # Requirement information
+        "description": requirement.description,
+        "priority": requirement.priority,
+
+        # Source information
+        "file_id": requirement.file_id,
+        "source_filename": (
+            source_file.filename
+            if source_file is not None
+            else None
+        ),
+        "source_page": requirement.source_page,
+        "source_evidence": requirement.source_evidence,
+        "evidence_verified": requirement.evidence_verified,
+        "pipeline_version": requirement.pipeline_version,
+    }
+
+
+def load_smart_checklist(
+    project_id: int,
+    db: Session,
+    item_id: int | None = None,
+):
+
+    query = (
+        db.query(
+            models.ChecklistItem,
+            models.Requirement,
+            models.ProjectFile,
+        )
+        .join(
+            models.Requirement,
+            (
+                models.Requirement.id
+                == models.ChecklistItem.requirement_id
+            )
+            & (
+                models.Requirement.project_id
+                == models.ChecklistItem.project_id
+            ),
+        )
+        .outerjoin(
+            models.ProjectFile,
+            (
+                models.ProjectFile.id
+                == models.Requirement.file_id
+            )
+            & (
+                models.ProjectFile.project_id
+                == models.Requirement.project_id
+            ),
+        )
+        .filter(
+            models.ChecklistItem.project_id == project_id
+        )
+    )
+
+    if item_id is not None:
+        query = query.filter(
+            models.ChecklistItem.id == item_id
+        )
+
+    rows = query.all()
+
+    priority_order = {
+        "high": 0,
+        "medium": 1,
+        "low": 2,
+    }
+
+    rows.sort(
+        key=lambda row: (
+            priority_order.get(
+                row[1].priority,
+                3,
+            ),
+            row[0].id,
+        )
+    )
+
+    return [
+        serialize_checklist_item(
+            item,
+            requirement,
+            source_file,
+        )
+        for item, requirement, source_file in rows
+    ]
+
+
+# ==================================================
+# GENERATE SMART CHECKLIST
 # ==================================================
 
 @app.post(
@@ -1399,85 +1760,113 @@ def generate_checklist(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+
     get_owned_project(
         project_id,
         db,
         current_user,
     )
 
-    requirements = (
-        db.query(models.Requirement)
-        .filter(
-            models.Requirement.project_id == project_id
-        )
-        .all()
-    )
+    try:
 
-    if not requirements:
-        raise HTTPException(
-            status_code=404,
-            detail="No requirements found",
-        )
-
-    existing_items = (
-        db.query(models.ChecklistItem)
-        .filter(
-            models.ChecklistItem.project_id == project_id,
-            models.ChecklistItem.requirement_id.in_(
-                [
-                    requirement.id
-                    for requirement in requirements
-                ]
-            ),
-        )
-        .all()
-    )
-
-    existing_by_requirement = {
-        item.requirement_id: item
-        for item in existing_items
-    }
-
-    ordered_items = []
-    new_items = []
-
-    for requirement in requirements:
-        item = existing_by_requirement.get(
-            requirement.id
+        # Serialize concurrent generation requests
+        locked_project = (
+            db.query(models.Project)
+            .filter(
+                models.Project.id == project_id,
+                models.Project.user_id == current_user.id,
+            )
+            .with_for_update()
+            .first()
         )
 
-        if item is None:
+        if locked_project is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Project not found",
+            )
+
+        requirements = (
+            db.query(models.Requirement)
+            .filter(
+                models.Requirement.project_id == project_id
+            )
+            .order_by(models.Requirement.id.asc())
+            .all()
+        )
+
+        if not requirements:
+            raise HTTPException(
+                status_code=404,
+                detail="No requirements found",
+            )
+
+        existing_items = (
+            db.query(models.ChecklistItem)
+            .filter(
+                models.ChecklistItem.project_id == project_id
+            )
+            .all()
+        )
+
+        existing_requirement_ids = {
+            item.requirement_id
+            for item in existing_items
+        }
+
+        new_items = []
+
+        for requirement in requirements:
+
+            if requirement.id in existing_requirement_ids:
+                continue
+
             item = models.ChecklistItem(
                 project_id=project_id,
                 requirement_id=requirement.id,
                 title=requirement.title,
                 completed=0,
             )
+
             new_items.append(item)
 
-        ordered_items.append(item)
+            existing_requirement_ids.add(
+                requirement.id
+            )
 
-    if new_items:
-        db.add_all(new_items)
-        db.flush()
+        if new_items:
+            db.add_all(new_items)
+            db.flush()
 
-    checklist = [
-        {
-            "id": item.id,
-            "project_id": item.project_id,
-            "requirement_id": item.requirement_id,
-            "title": item.title,
-            "completed": bool(item.completed),
-        }
-        for item in ordered_items
-    ]
+        result = load_smart_checklist(
+            project_id,
+            db,
+        )
 
-    db.commit()
-    return checklist
+        db.commit()
+
+        return result
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception as error:
+        db.rollback()
+
+        print(
+            "Checklist generation failed:",
+            type(error).__name__,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Could not generate checklist",
+        ) from error
 
 
 # ==================================================
-# GET CHECKLIST
+# GET SMART CHECKLIST
 # ==================================================
 
 @app.get("/projects/{project_id}/checklist")
@@ -1486,34 +1875,21 @@ def get_checklist(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+
     get_owned_project(
         project_id,
         db,
         current_user,
     )
 
-    items = (
-        db.query(models.ChecklistItem)
-        .filter(
-            models.ChecklistItem.project_id == project_id
-        )
-        .all()
+    return load_smart_checklist(
+        project_id,
+        db,
     )
-
-    return [
-        {
-            "id": item.id,
-            "project_id": item.project_id,
-            "requirement_id": item.requirement_id,
-            "title": item.title,
-            "completed": bool(item.completed),
-        }
-        for item in items
-    ]
 
 
 # ==================================================
-# UPDATE CHECKLIST ITEM
+# UPDATE SMART CHECKLIST ITEM
 # ==================================================
 
 @app.patch("/checklist/{item_id}")
@@ -1523,6 +1899,7 @@ def update_checklist_item(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+
     item = (
         db.query(models.ChecklistItem)
         .join(
@@ -1543,23 +1920,72 @@ def update_checklist_item(
             detail="Checklist item not found",
         )
 
-    item.completed = 1 if update.completed else 0
+    try:
 
-    db.commit()
-    db.refresh(item)
+        item.completed = (
+            1 if update.completed else 0
+        )
 
-    return {
-        "id": item.id,
-        "project_id": item.project_id,
-        "requirement_id": item.requirement_id,
-        "title": item.title,
-        "completed": bool(item.completed),
-    }
+        db.flush()
+
+        result = load_smart_checklist(
+            item.project_id,
+            db,
+            item_id=item.id,
+        )
+
+        if not result:
+            raise HTTPException(
+                status_code=404,
+                detail="Checklist requirement not found",
+            )
+
+        db.commit()
+
+        return result[0]
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception as error:
+        db.rollback()
+
+        print(
+            "Checklist update failed:",
+            type(error).__name__,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Could not update checklist item",
+        ) from error
+
 
 
 # ==================================================
 # CHECK SUBMISSION WITH AI
 # ==================================================
+
+
+
+from app.ai_service import check_submission_with_evidence
+
+
+def serialize_submission_result(db_result):
+    return {
+        "id": db_result.id,
+        "project_id": db_result.project_id,
+        "file_id": db_result.file_id,
+        "requirement_id": db_result.requirement_id,
+        "status": db_result.status,
+        "feedback": db_result.feedback,
+        "source_page": db_result.source_page,
+        "source_evidence": db_result.source_evidence,
+        "evidence_verified": db_result.evidence_verified,
+        "suggested_improvement": db_result.suggested_improvement,
+        "pipeline_version": db_result.pipeline_version,
+    }
 
 
 @app.post(
@@ -1583,9 +2009,12 @@ def check_submission(
         schemas.FileRole.SUBMISSION,
     )
 
-    submission_text = read_pdf_text(db_file)
+    pages = read_pdf_pages(db_file)
 
-    if not submission_text.strip():
+    if not pages or not any(
+        page["text"].strip()
+        for page in pages
+    ):
         raise HTTPException(
             status_code=400,
             detail="No text could be extracted from submission PDF",
@@ -1596,6 +2025,7 @@ def check_submission(
         .filter(
             models.Requirement.project_id == project_id
         )
+        .order_by(models.Requirement.id)
         .all()
     )
 
@@ -1615,18 +2045,119 @@ def check_submission(
         for requirement in requirements_db
     ]
 
-    # Both AI operations share the same daily limit.
+    user_id = current_user.id
+
     try:
-        with ai_request_slot(current_user.id):
-            result = check_submission_with_ai(
-                submission_text,
-                requirements,
+        with ai_request_slot(user_id):
+
+            report = check_submission_with_evidence(
+                pages=pages,
+                requirements=requirements,
             )
 
+            if report.get("can_persist") is not True:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Submission evaluation failed validation. "
+                        "Existing results were preserved."
+                    ),
+                )
+
+            db_file = lock_owned_project_file(
+                project_id,
+                file_id,
+                db,
+                current_user,
+            )
+
+            ensure_file_role(
+                db_file,
+                schemas.FileRole.SUBMISSION,
+            )
+
+            current_requirements_db = (
+                db.query(models.Requirement)
+                .filter(
+                    models.Requirement.project_id == project_id
+                )
+                .order_by(models.Requirement.id)
+                .populate_existing()
+                .with_for_update()
+                .all()
+            )
+
+            current_requirements = [
+                {
+                    "id": requirement.id,
+                    "title": requirement.title,
+                    "description": requirement.description,
+                    "priority": requirement.priority,
+                }
+                for requirement in current_requirements_db
+            ]
+
+            if current_requirements != requirements:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Project requirements changed during "
+                        "evaluation. Please try again."
+                    ),
+                )
+
+            db.query(models.SubmissionResult).filter(
+                models.SubmissionResult.project_id == project_id,
+                models.SubmissionResult.file_id == file_id,
+            ).delete(synchronize_session=False)
+
+            saved_results = []
+
+            for item in report["results"]:
+
+                db_result = models.SubmissionResult(
+                    project_id=project_id,
+                    file_id=file_id,
+                    requirement_id=item["requirement_id"],
+                    status=item["status"],
+                    feedback=item["feedback"],
+                    source_page=item["source_page"],
+                    source_evidence=item["source_evidence"],
+                    evidence_verified=item["evidence_verified"],
+                    suggested_improvement=item["suggested_improvement"],
+                    pipeline_version=item["pipeline_version"],
+                )
+
+                db.add(db_result)
+                db.flush()
+
+                saved_results.append(
+                    serialize_submission_result(db_result)
+                )
+
+            response = {
+                "project_id": project_id,
+                "file_id": file_id,
+                "results": saved_results,
+                "evaluation": {
+                    "pipeline_version": report["pipeline_version"],
+                    "status": report["status"],
+                    "can_persist": report["can_persist"],
+                    "review_required": report["review_required"],
+                    "status_counts": report["status_counts"],
+                    "statistics": report["statistics"],
+                },
+            }
+
+            db.commit()
+
     except HTTPException:
+        db.rollback()
         raise
 
     except Exception as error:
+        db.rollback()
+
         print(
             "SUBMISSION CHECK ERROR:",
             type(error).__name__,
@@ -1637,56 +2168,13 @@ def check_submission(
             detail="Submission check failed",
         ) from error
 
-    # Recheck the role before saving results.
-    db_file = lock_owned_project_file(
-        project_id,
-        file_id,
-        db,
-        current_user,
-    )
+    return response
 
-    ensure_file_role(
-        db_file,
-        schemas.FileRole.SUBMISSION,
-    )
-
-    db.query(models.SubmissionResult).filter(
-        models.SubmissionResult.project_id == project_id,
-        models.SubmissionResult.file_id == file_id,
-    ).delete(synchronize_session=False)
-
-    saved_results = []
-
-    for item in result["results"]:
-        db_result = models.SubmissionResult(
-            project_id=project_id,
-            file_id=file_id,
-            requirement_id=item["requirement_id"],
-            status=item["status"],
-            feedback=item["feedback"],
-        )
-
-        db.add(db_result)
-        db.flush()
-
-        saved_results.append({
-            "id": db_result.id,
-            "requirement_id": db_result.requirement_id,
-            "status": db_result.status,
-            "feedback": db_result.feedback,
-        })
-
-    db.commit()
-
-    return {
-        "project_id": project_id,
-        "file_id": file_id,
-        "results": saved_results,
-    }
 
 # ==================================================
 # GET SUBMISSION RESULTS
 # ==================================================
+
 
 @app.get(
     "/projects/{project_id}/submission-results"
@@ -1696,6 +2184,7 @@ def get_submission_results(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+
     get_owned_project(
         project_id,
         db,
@@ -1705,22 +2194,23 @@ def get_submission_results(
     results = (
         db.query(models.SubmissionResult)
         .filter(
-            models.SubmissionResult.project_id == project_id
+            models.SubmissionResult.project_id
+            == project_id
+        )
+        .order_by(
+            models.SubmissionResult.file_id,
+            models.SubmissionResult.requirement_id,
+            models.SubmissionResult.id,
         )
         .all()
     )
 
     return [
-        {
-            "id": result.id,
-            "project_id": result.project_id,
-            "file_id": result.file_id,
-            "requirement_id": result.requirement_id,
-            "status": result.status,
-            "feedback": result.feedback,
-        }
+        serialize_submission_result(result)
         for result in results
     ]
+
+
 
 
 # ==================================================
@@ -1736,6 +2226,11 @@ def get_submission_report(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+
+    # ======================================
+    # STEP 1: OWNERSHIP VERIFICATION
+    # ======================================
+
     project = get_owned_project(
         project_id,
         db,
@@ -1749,73 +2244,249 @@ def get_submission_report(
         current_user,
     )
 
+    # ======================================
+    # STEP 2: LOAD SUBMISSION RESULTS
+    # ======================================
+
     results = (
         db.query(models.SubmissionResult)
         .filter(
-            models.SubmissionResult.project_id == project_id,
-            models.SubmissionResult.file_id == file_id,
+            models.SubmissionResult.project_id
+            == project_id,
+
+            models.SubmissionResult.file_id
+            == file_id,
+        )
+        .order_by(
+            models.SubmissionResult.requirement_id,
+            models.SubmissionResult.id,
         )
         .all()
     )
 
     if not results:
+
         raise HTTPException(
             status_code=404,
             detail="No submission results found",
         )
 
+    # ======================================
+    # STEP 3: STATUS STATISTICS
+    # ======================================
+
     total = len(results)
 
-    fulfilled = sum(
-        1
-        for result in results
-        if result.status == "fulfilled"
-    )
+    status_counts = {
+        "fulfilled": 0,
+        "partially_fulfilled": 0,
+        "missing": 0,
+        "unclear": 0,
+    }
 
-    missing = sum(
-        1
-        for result in results
-        if result.status == "missing"
-    )
+    unknown_status_count = 0
 
-    unclear = sum(
-        1
-        for result in results
-        if result.status == "unclear"
-    )
+    for result in results:
+
+        if result.status in status_counts:
+
+            status_counts[result.status] += 1
+
+        else:
+
+            unknown_status_count += 1
+
+    fulfilled = status_counts["fulfilled"]
+
+    partially_fulfilled = status_counts[
+        "partially_fulfilled"
+    ]
+
+    missing = status_counts["missing"]
+
+    unclear = status_counts["unclear"]
+
+    # ======================================
+    # STEP 4: COMPLETION PERCENTAGE
+    # ======================================
 
     completion_percentage = round(
         (fulfilled / total) * 100,
         2,
     )
 
+    # ======================================
+    # STEP 5: EVIDENCE STATISTICS
+    # ======================================
+
+    verified_evidence = sum(
+        1
+        for result in results
+        if result.evidence_verified is True
+    )
+
+    unverified_evidence = sum(
+        1
+        for result in results
+        if result.evidence_verified is False
+    )
+
+    evidence_not_available = sum(
+        1
+        for result in results
+        if result.evidence_verified is None
+    )
+
+    evidence_coverage_percentage = round(
+        (verified_evidence / total) * 100,
+        2,
+    )
+
+    # ======================================
+    # STEP 6: LEGACY REPORT SUPPORT
+    # ======================================
+
+    legacy_results = sum(
+        1
+        for result in results
+        if result.pipeline_version is None
+    )
+
+    pipeline_versions = sorted({
+        result.pipeline_version
+
+        for result in results
+
+        if result.pipeline_version is not None
+    })
+
+    is_legacy_report = (
+        legacy_results == total
+    )
+
+    # ======================================
+    # STEP 7: CHECK REQUIRED EVIDENCE
+    # ======================================
+
+    missing_required_evidence = sum(
+        1
+        for result in results
+
+        if result.status in (
+            "fulfilled",
+            "partially_fulfilled",
+        )
+
+        and (
+            result.evidence_verified is not True
+
+            or result.source_page is None
+
+            or result.source_page <= 0
+
+            or not result.source_evidence
+
+            or not result.source_evidence.strip()
+        )
+    )
+
+    review_required = (
+        unclear > 0
+        or legacy_results > 0
+        or unverified_evidence > 0
+        or missing_required_evidence > 0
+        or unknown_status_count > 0
+        or len(pipeline_versions) > 1
+    )
+
+    # ======================================
+    # STEP 8: DETAILED RESULTS
+    # ======================================
+
     details = [
-        {
-            "requirement_id": result.requirement_id,
-            "status": result.status,
-            "feedback": result.feedback,
-        }
+        serialize_submission_result(result)
         for result in results
     ]
 
+    # ======================================
+    # STEP 9: FINAL REPORT
+    # ======================================
+
     return {
         "project_id": project.id,
+
         "project_title": project.title,
+
         "file_id": file_id,
-        "submission_filename": submission_file.filename,
+
+        "submission_filename": (
+            submission_file.filename
+        ),
+
         "summary": {
             "total_requirements": total,
+
             "fulfilled": fulfilled,
+
+            "partially_fulfilled": (
+                partially_fulfilled
+            ),
+
             "missing": missing,
+
             "unclear": unclear,
-            "completion_percentage": completion_percentage,
+
+            "unknown_status_count": (
+                unknown_status_count
+            ),
+
+            "completion_percentage": (
+                completion_percentage
+            ),
         },
+
+        "evidence_summary": {
+            "verified_evidence": (
+                verified_evidence
+            ),
+
+            "unverified_evidence": (
+                unverified_evidence
+            ),
+
+            "evidence_not_available": (
+                evidence_not_available
+            ),
+
+            "evidence_coverage_percentage": (
+                evidence_coverage_percentage
+            ),
+
+            "missing_required_evidence": (
+                missing_required_evidence
+            ),
+        },
+
+        "evaluation": {
+            "pipeline_versions": (
+                pipeline_versions
+            ),
+
+            "is_legacy_report": (
+                is_legacy_report
+            ),
+
+            "legacy_results": (
+                legacy_results
+            ),
+
+            "review_required": (
+                review_required
+            ),
+        },
+
         "details": details,
     }
-    # ==================================================
-# DELETE USER ACCOUNT
-# ==================================================
-
 
 # ==================================================
 # DELETE USER ACCOUNT

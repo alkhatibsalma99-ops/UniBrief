@@ -144,6 +144,7 @@ def client(db, user):
 # BLOCK REAL AI CALLS
 # ==================================================
 
+
 @pytest.fixture(autouse=True)
 def protect_ai():
 
@@ -151,13 +152,19 @@ def protect_ai():
         patch(
             "app.main.extract_requirements_with_ai",
             side_effect=RuntimeError(
-                "Real AI calls are forbidden in tests"
+                "Real AI V2 calls are forbidden in tests"
+            ),
+        ),
+        patch(
+            "app.main.extract_requirements_with_evidence",
+            side_effect=RuntimeError(
+                "Real AI V3 calls are forbidden in tests"
             ),
         ),
         patch(
             "app.main.check_submission_with_ai",
             side_effect=RuntimeError(
-                "Real AI calls are forbidden in tests"
+                "Real submission AI calls are forbidden in tests"
             ),
         ),
         patch(
@@ -166,9 +173,14 @@ def protect_ai():
                 nullcontext()
             ),
         ),
+        patch(
+    "app.main.check_submission_with_evidence",
+    side_effect=RuntimeError(
+        "Real submission evidence AI calls are forbidden in tests"
+    ),
+),
     ):
         yield
-
 
 # ==================================================
 # HELPERS
@@ -609,10 +621,10 @@ def test_submission_cannot_be_analyzed(
 
     with (
         patch(
-            "app.main.read_pdf_text"
+            "app.main.read_pdf_pages"
         ) as read_pdf,
         patch(
-            "app.main.extract_requirements_with_ai"
+            "app.main.extract_requirements_with_evidence"
         ) as ai,
     ):
         response = client.post(
@@ -624,41 +636,6 @@ def test_submission_cannot_be_analyzed(
 
         read_pdf.assert_not_called()
         ai.assert_not_called()
-
-
-# ==================================================
-# 16. BLOCK WRONG SUBMISSION CHECK ROLE
-# ==================================================
-
-def test_requirements_cannot_be_submission(
-    client,
-    db,
-    project,
-):
-    db_file = create_file(
-        db,
-        project,
-        "requirements",
-    )
-
-    with (
-        patch(
-            "app.main.read_pdf_text"
-        ) as read_pdf,
-        patch(
-            "app.main.check_submission_with_ai"
-        ) as ai,
-    ):
-        response = client.post(
-            f"/projects/{project.id}/submission/"
-            f"{db_file.id}/check"
-        )
-
-        assert response.status_code == 400
-
-        read_pdf.assert_not_called()
-        ai.assert_not_called()
-
 
 # ==================================================
 # 17. BLOCK WRONG SIMPLE EXTRACTION ROLE
@@ -693,6 +670,7 @@ def test_submission_cannot_extract_requirements(
 # 18-19. VALID AI ANALYSIS + LEGACY SUPPORT
 # ==================================================
 
+
 @pytest.mark.parametrize(
     "role",
     ["requirements", "unclassified"],
@@ -709,26 +687,47 @@ def test_valid_ai_analysis(
         role,
     )
 
+    pages = [
+        {
+            "page_number": 1,
+            "text": "Create a login page.",
+        }
+    ]
+
     with (
         patch(
-            "app.main.read_pdf_text",
-            return_value="Create a login page",
-        ),
+            "app.main.read_pdf_pages",
+            return_value=pages,
+        ) as read_pdf,
+
         patch(
-            "app.main.extract_requirements_with_ai",
+            "app.main.extract_requirements_with_evidence",
             return_value={
                 "requirements": [
                     {
                         "title": "Login page",
                         "description": (
-                            "Implement authentication"
+                            "Create a login page."
                         ),
                         "priority": "high",
+                        "source_page": 1,
+                        "source_evidence": (
+                            "Create a login page."
+                        ),
+                        "evidence_verified": True,
                     }
-                ]
+                ],
+                "unverified_requirements": [],
+                "statistics": {
+                    "total": 1,
+                    "verified": 1,
+                    "unverified": 0,
+                    "verification_rate": 100.0,
+                },
             },
         ) as ai,
     ):
+
         response = client.post(
             f"/projects/{project.id}/files/"
             f"{db_file.id}/analyze"
@@ -736,12 +735,80 @@ def test_valid_ai_analysis(
 
         assert response.status_code == 200
 
-        assert len(
-            response.json()["requirements"]
-        ) == 1
+        data = response.json()
 
-        ai.assert_called_once()
+        assert len(data["requirements"]) == 1
 
+        requirement = data["requirements"][0]
+
+        # Existing fields
+
+        assert requirement["title"] == "Login page"
+
+        assert requirement["priority"] == "high"
+
+        assert requirement["project_id"] == project.id
+
+        assert requirement["file_id"] == db_file.id
+
+        # New evidence fields
+
+        assert requirement["source_page"] == 1
+
+        assert requirement["source_evidence"] == (
+            "Create a login page."
+        )
+
+        assert requirement["evidence_verified"] is True
+
+        assert requirement["pipeline_version"] == "1.0.0"
+
+        # Pipeline statistics
+
+        analysis = data["analysis"]
+
+        assert analysis["status"] == "completed"
+
+        assert analysis["review_required"] is False
+
+        assert analysis["statistics"]["original_count"] == 1
+
+        assert analysis["statistics"]["valid_count"] == 1
+
+        assert analysis["statistics"]["invalid_count"] == 0
+
+        assert analysis["statistics"]["unique_count"] == 1
+
+        assert analysis["statistics"]["validation_rate"] == 100.0
+
+        # Database persistence
+
+        assert analysis["persistence"]["inserted_count"] == 1
+
+        assert analysis["persistence"]["reused_count"] == 0
+
+        saved = db.get(
+            models.Requirement,
+            requirement["id"],
+        )
+
+        assert saved is not None
+
+        assert saved.source_page == 1
+
+        assert saved.source_evidence == (
+            "Create a login page."
+        )
+
+        assert saved.evidence_verified is True
+
+        assert saved.pipeline_version == "1.0.0"
+
+        # Verify calls
+
+        read_pdf.assert_called_once()
+
+        ai.assert_called_once_with(pages)
 
 # ==================================================
 # 20-21. VALID SUBMISSION + LEGACY SUPPORT
@@ -757,6 +824,10 @@ def test_valid_submission_check(
     project,
     role,
 ):
+    from app.submission_validator import (
+        validate_submission_results,
+    )
+
     requirements_file = create_file(
         db,
         project,
@@ -777,22 +848,37 @@ def test_valid_submission_check(
 
     requirement_id = requirement.id
 
+    pages = [
+        {
+            "page_number": 1,
+            "text": "Completed login page",
+        }
+    ]
+
+    def mock_submission(pages, requirements):
+        return validate_submission_results(
+            results=[
+                {
+                    "requirement_id": requirement_id,
+                    "status": "fulfilled",
+                    "feedback": "Login implemented",
+                    "source_page": 1,
+                    "source_evidence": "Completed login page",
+                    "suggested_improvement": "",
+                }
+            ],
+            requirements=requirements,
+            pages=pages,
+        )
+
     with (
         patch(
-            "app.main.read_pdf_text",
-            return_value="Completed login page",
+            "app.main.read_pdf_pages",
+            return_value=pages,
         ),
         patch(
-            "app.main.check_submission_with_ai",
-            return_value={
-                "results": [
-                    {
-                        "requirement_id": requirement_id,
-                        "status": "fulfilled",
-                        "feedback": "Login implemented",
-                    }
-                ]
-            },
+            "app.main.check_submission_with_evidence",
+            side_effect=mock_submission,
         ) as ai,
     ):
         response = client.post(
@@ -800,7 +886,7 @@ def test_valid_submission_check(
             f"{submission_file.id}/check"
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
 
         results = response.json()["results"]
 
@@ -808,7 +894,38 @@ def test_valid_submission_check(
 
         assert results[0]["status"] == "fulfilled"
 
+        assert results[0]["source_page"] == 1
+
+        assert (
+            results[0]["source_evidence"]
+            == "Completed login page"
+        )
+
+        assert results[0]["evidence_verified"] is True
+
+        assert results[0]["pipeline_version"] == "2.0.0"
+
+        assert (
+            response.json()["evaluation"]["can_persist"]
+            is True
+        )
+
         ai.assert_called_once()
+
+        saved = db.query(
+            models.SubmissionResult
+        ).filter(
+            models.SubmissionResult.project_id == project.id,
+            models.SubmissionResult.file_id == submission_file.id,
+        ).one()
+
+        assert saved.source_page == 1
+
+        assert saved.source_evidence == "Completed login page"
+
+        assert saved.evidence_verified is True
+
+        assert saved.pipeline_version == "2.0.0"
 
 
 # ==================================================
@@ -871,3 +988,28 @@ def test_database_default_role(
     )
 
     assert saved_file.file_role == "unclassified"
+
+def test_requirements_cannot_be_submission(
+    client, db, project
+):
+    db_file = create_file(
+        db, project, "requirements"
+    )
+
+    with (
+        patch(
+            "app.main.read_pdf_pages"
+        ) as read_pdf,
+
+        patch(
+            "app.main.check_submission_with_evidence"
+        ) as ai,
+    ):
+        response = client.post(
+            f"/projects/{project.id}/submission/{db_file.id}/check"
+        )
+
+        assert response.status_code == 400
+
+        read_pdf.assert_not_called()
+        ai.assert_not_called()

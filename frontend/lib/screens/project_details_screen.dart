@@ -28,9 +28,12 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   List<dynamic> files = [];
   List<dynamic> requirements = [];
   List<dynamic> checklist = [];
+  String checklistFilter = 'all';
   List<dynamic> submissionResults = [];
 
   dynamic submissionReport;
+  Map<String, dynamic>? analysisSummary;
+  int? analyzedFileId;
 
   int? selectedFileId;
   int? selectedSubmissionFileId;
@@ -305,6 +308,14 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
             'done',
             'score',
             'percentage',
+            'priority',
+            'source_filename',
+            'source_page',
+            'source_evidence',
+            'evidence_verified',
+            'pipeline_version',
+            'pipeline_versions',
+            'submission_filename',
           ].contains(key)) {
             continue;
           }
@@ -414,8 +425,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   // ==========================================
 
   Future<void> refreshAll() async {
-    if (fileActionsBusy) return;
-
+    if (fileActionsBusy || checklistBusy) return;
     await Future.wait([
       loadFiles(),
       loadRequirements(),
@@ -763,6 +773,10 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
         if (selectedReportFileId == fileId) {
           selectedReportFileId = null;
         }
+        if (analyzedFileId == fileId) {
+          analysisSummary = null;
+          analyzedFileId = null;
+        }
 
         submissionReport = null;
         reportError = null;
@@ -814,26 +828,87 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
       return;
     }
 
-    setState(() => isAnalyzing = true);
+    setState(() {
+      isAnalyzing = true;
+      analysisSummary = null;
+      analyzedFileId = null;
+    });
 
     try {
-      await ApiService.analyzeFile(widget.token, widget.projectId, fileId);
+      final result = await ApiService.analyzeFile(
+        widget.token,
+        widget.projectId,
+        fileId,
+      );
 
       if (!mounted) return;
+
+      final rawAnalysis = result is Map ? result['analysis'] : null;
+
+      final summary = rawAnalysis is Map
+          ? Map<String, dynamic>.from(rawAnalysis)
+          : null;
+
+      setState(() {
+        analysisSummary = summary;
+        analyzedFileId = fileId;
+      });
 
       await loadRequirements();
 
       if (!mounted) return;
 
-      showMessage(
-        t(
-          'AI analysis completed',
-          'KI-Analyse abgeschlossen',
-          'اكتمل تحليل الملف بالذكاء الاصطناعي',
-        ),
-      );
+      if (requirementsError != null) {
+        showMessage(
+          t(
+            'Analysis finished, but saved requirements could not be loaded.',
+            'Analyse beendet, aber gespeicherte Anforderungen konnten nicht geladen werden.',
+            'انتهى التحليل، لكن تعذر تحميل المتطلبات المحفوظة.',
+          ),
+          error: true,
+        );
+        return;
+      }
+
+      final status = summary?['status'];
+
+      if (status == 'failed') {
+        showMessage(
+          t(
+            'No valid requirements found. Review the analysis.',
+            'Keine gültigen Anforderungen gefunden. Prüfe die Analyse.',
+            'لم يتم العثور على متطلبات صالحة. راجعي نتائج التحليل.',
+          ),
+          error: true,
+        );
+      } else if (status == 'empty') {
+        showMessage(
+          t(
+            'No requirements were extracted.',
+            'Es wurden keine Anforderungen extrahiert.',
+            'لم يتم استخراج أي متطلبات.',
+          ),
+        );
+      } else if (summary?['review_required'] == true) {
+        showMessage(
+          t(
+            'Analysis finished. Manual review recommended.',
+            'Analyse beendet. Manuelle Prüfung empfohlen.',
+            'انتهى التحليل. يُنصح بالمراجعة اليدوية.',
+          ),
+        );
+      } else {
+        showMessage(
+          t(
+            'AI analysis completed',
+            'KI-Analyse abgeschlossen',
+            'اكتمل تحليل الملف بالذكاء الاصطناعي',
+          ),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
+
       showMessage(friendlyError(e), error: true);
     } finally {
       if (mounted) {
@@ -847,7 +922,11 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   // ==========================================
 
   Future<void> generateChecklist() async {
-    if (isGeneratingChecklist || requirements.isEmpty) {
+    if (checklistBusy ||
+        fileActionsBusy ||
+        isLoadingRequirements ||
+        requirementsError != null ||
+        requirements.isEmpty) {
       return;
     }
 
@@ -861,7 +940,10 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
 
       if (!mounted) return;
 
-      setState(() => checklist = result);
+      setState(() {
+        checklist = result;
+        checklistError = null;
+      });
       _scheduleTranslation();
 
       showMessage(
@@ -884,7 +966,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   Future<void> toggleChecklist(dynamic item, bool completed) async {
     final id = itemId(item);
 
-    if (id == null || updatingItemIds.contains(id)) {
+    if (id == null || checklistBusy || fileActionsBusy) {
       return;
     }
 
@@ -982,6 +1064,911 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
         setState(() => isLoadingReport = false);
       }
     }
+  }
+
+  // ==========================================
+  // ANALYSIS STATISTICS
+  // ==========================================
+
+  Widget analysisMetric({
+    required String label,
+    required String value,
+    required IconData icon,
+    required Color color,
+  }) {
+    return Container(
+      width: 150,
+      constraints: const BoxConstraints(minHeight: 110),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.20)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 22),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 23,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(label, style: const TextStyle(fontSize: 12)),
+        ],
+      ),
+    );
+  }
+
+  Widget buildAnalysisSummary() {
+    final summary = analysisSummary;
+
+    if (summary == null ||
+        analyzedFileId != selectedFileId ||
+        !hasFileRole(analyzedFileId, ApiService.requirementsRole)) {
+      return const SizedBox.shrink();
+    }
+
+    final rawStatistics = summary['statistics'];
+
+    final statistics = rawStatistics is Map
+        ? rawStatistics
+        : <String, dynamic>{};
+
+    final rawPriorities = summary['priority_counts'];
+
+    final priorities = rawPriorities is Map
+        ? rawPriorities
+        : <String, dynamic>{};
+
+    final rawPersistence = summary['persistence'];
+
+    final persistence = rawPersistence is Map
+        ? rawPersistence
+        : <String, dynamic>{};
+
+    final originalCount = statistics['original_count'] ?? 0;
+
+    final validCount = statistics['valid_count'] ?? 0;
+
+    final invalidCount = statistics['invalid_count'] ?? 0;
+
+    final exactDuplicates = statistics['exact_duplicates_count'] ?? 0;
+
+    final possibleDuplicates = statistics['possible_duplicates_count'] ?? 0;
+
+    final validationRate = statistics['validation_rate'];
+
+    final validationText = validationRate is num
+        ? '${validationRate.toStringAsFixed(1)}%'
+        : '—';
+
+    final high = priorities['high'] ?? 0;
+    final medium = priorities['medium'] ?? 0;
+    final low = priorities['low'] ?? 0;
+
+    final reviewRequired = summary['review_required'] == true;
+
+    final status = summary['status'];
+
+    final pipelineVersion = summary['pipeline_version'] ?? '—';
+
+    String statusLabel;
+    Color statusColor;
+    IconData statusIcon;
+
+    if (status == 'failed') {
+      statusLabel = t(
+        'No valid requirements',
+        'Keine gültigen Anforderungen',
+        'لا توجد متطلبات صالحة',
+      );
+      statusColor = Colors.red.shade700;
+      statusIcon = Icons.error_outline;
+    } else if (status == 'empty') {
+      statusLabel = t(
+        'No requirements extracted',
+        'Keine Anforderungen extrahiert',
+        'لم يتم استخراج متطلبات',
+      );
+      statusColor = Colors.grey.shade700;
+      statusIcon = Icons.info_outline;
+    } else if (reviewRequired) {
+      statusLabel = t(
+        'Manual review recommended',
+        'Manuelle Prüfung empfohlen',
+        'يُنصح بالمراجعة اليدوية',
+      );
+      statusColor = Colors.orange.shade800;
+      statusIcon = Icons.warning_amber_rounded;
+    } else if (status == 'completed') {
+      statusLabel = t(
+        'Validation completed',
+        'Validierung abgeschlossen',
+        'اكتمل التحقق',
+      );
+      statusColor = Colors.green.shade700;
+      statusIcon = Icons.check_circle_outline;
+    } else {
+      statusLabel = t(
+        'Unknown analysis status',
+        'Unbekannter Analysestatus',
+        'حالة التحليل غير معروفة',
+      );
+      statusColor = Colors.grey.shade700;
+      statusIcon = Icons.info_outline;
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: Colors.deepPurple.withValues(alpha: 0.20)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.analytics_outlined, color: Colors.deepPurple),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    t(
+                      'Analysis overview',
+                      'Analyseübersicht',
+                      'نظرة عامة على التحليل',
+                    ),
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 8),
+
+            Text(
+              t(
+                'Results of the last analysis of the selected PDF.',
+                'Ergebnisse der letzten Analyse der ausgewählten PDF.',
+                'نتائج آخر تحليل لملف PDF المحدد.',
+              ),
+              style: const TextStyle(fontSize: 13, color: Colors.grey),
+            ),
+
+            const SizedBox(height: 16),
+
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                analysisMetric(
+                  label: t('Extracted', 'Extrahiert', 'المتطلبات المستخرجة'),
+                  value: '$originalCount',
+                  icon: Icons.description_outlined,
+                  color: Colors.deepPurple,
+                ),
+
+                analysisMetric(
+                  label: t(
+                    'Valid requirements',
+                    'Gültige Anforderungen',
+                    'المتطلبات الصالحة',
+                  ),
+                  value: '$validCount',
+                  icon: Icons.verified_outlined,
+                  color: Colors.green.shade700,
+                ),
+
+                analysisMetric(
+                  label: t(
+                    'Invalid requirements',
+                    'Ungültige Anforderungen',
+                    'المتطلبات غير الصالحة',
+                  ),
+                  value: '$invalidCount',
+                  icon: Icons.error_outline,
+                  color: invalidCount == 0
+                      ? Colors.blueGrey
+                      : Colors.red.shade700,
+                ),
+
+                analysisMetric(
+                  label: t(
+                    'Possible duplicate pairs',
+                    'Mögliche Duplikatpaare',
+                    'أزواج المتطلبات المتشابهة',
+                  ),
+                  value: '$possibleDuplicates',
+                  icon: Icons.compare_arrows,
+                  color: Colors.orange.shade800,
+                ),
+
+                analysisMetric(
+                  label: t(
+                    'Exact duplicates',
+                    'Exakte Duplikate',
+                    'المتطلبات المتطابقة',
+                  ),
+                  value: '$exactDuplicates',
+                  icon: Icons.copy_outlined,
+                  color: Colors.blueGrey,
+                ),
+
+                analysisMetric(
+                  label: t(
+                    'Validation rate',
+                    'Validierungsrate',
+                    'نسبة اجتياز التحقق',
+                  ),
+                  value: validationText,
+                  icon: Icons.fact_check_outlined,
+                  color: Colors.teal,
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 16),
+
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(statusIcon, color: statusColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    statusLabel,
+                    style: TextStyle(
+                      color: statusColor,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 12),
+
+            Text(
+              t(
+                'Validation checks text evidence and data structure, not semantic accuracy.',
+                'Die Validierung prüft Textbelege und Datenstruktur, nicht die semantische Richtigkeit.',
+                'يتحقق النظام من الأدلة النصية وبنية البيانات، وليس من الدقة الدلالية للمتطلبات.',
+              ),
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+
+            const Divider(height: 28),
+
+            Text(
+              t(
+                'Priority distribution (unique requirements)',
+                'Prioritätsverteilung (eindeutige Anforderungen)',
+                'توزيع أولويات المتطلبات الفريدة',
+              ),
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+
+            const SizedBox(height: 12),
+
+            Wrap(
+              spacing: 16,
+              runSpacing: 8,
+              children: [
+                Text(
+                  '${t("High", "Hoch", "عالية")}: $high',
+                  style: TextStyle(
+                    color: Colors.red.shade700,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  '${t("Medium", "Mittel", "متوسطة")}: $medium',
+                  style: TextStyle(
+                    color: Colors.orange.shade800,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  '${t("Low", "Niedrig", "منخفضة")}: $low',
+                  style: const TextStyle(
+                    color: Colors.blueGrey,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+
+            const Divider(height: 28),
+
+            Text(
+              '${t("Newly saved", "Neu gespeichert", "المتطلبات المحفوظة حديثاً")}: '
+              '${persistence["inserted_count"] ?? 0}',
+            ),
+
+            const SizedBox(height: 6),
+
+            Text(
+              '${t("Reused requirements", "Wiederverwendete Anforderungen", "المتطلبات المعاد استخدامها")}: '
+              '${persistence["reused_count"] ?? 0}',
+            ),
+
+            const SizedBox(height: 6),
+
+            Text(
+              '${t("Additional sources preserved", "Zusätzliche Quellen erhalten", "المصادر الإضافية المحفوظة")}: '
+              '${persistence["preserved_source_count"] ?? 0}',
+            ),
+
+            const SizedBox(height: 12),
+
+            Text(
+              '${t("Pipeline version", "Pipeline-Version", "إصدار المعالجة")}: '
+              '$pipelineVersion',
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ==========================================
+  // SMART CHECKLIST V2
+  // ==========================================
+
+  int checklistPriority(dynamic item) {
+    if (item is! Map) return 3;
+
+    switch ((item['priority'] ?? '').toString().toLowerCase()) {
+      case 'high':
+        return 0;
+      case 'medium':
+        return 1;
+      case 'low':
+        return 2;
+      default:
+        return 3;
+    }
+  }
+
+  List<dynamic> get filteredChecklist {
+    final result = checklist.where((item) {
+      switch (checklistFilter) {
+        case 'completed':
+          return isCompleted(item);
+
+        case 'pending':
+          return !isCompleted(item);
+
+        default:
+          return true;
+      }
+    }).toList();
+
+    result.sort((a, b) {
+      final priorityComparison = checklistPriority(
+        a,
+      ).compareTo(checklistPriority(b));
+
+      if (priorityComparison != 0) {
+        return priorityComparison;
+      }
+
+      return (itemId(a) ?? 0).compareTo(itemId(b) ?? 0);
+    });
+
+    return result;
+  }
+
+  bool get checklistBusy =>
+      isLoadingChecklist || isGeneratingChecklist || updatingItemIds.isNotEmpty;
+
+  Widget checklistFilterChip(String value, String label, int count) {
+    return ChoiceChip(
+      label: Text('$label ($count)'),
+      selected: checklistFilter == value,
+      selectedColor: Colors.deepPurple.shade100,
+      onSelected: (_) {
+        setState(() {
+          checklistFilter = value;
+        });
+      },
+    );
+  }
+
+  Widget checklistCounter(String label, int count, Color color, IconData icon) {
+    return Container(
+      constraints: const BoxConstraints(minWidth: 95),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 22),
+          const SizedBox(height: 6),
+          Text(
+            '$count',
+            style: TextStyle(
+              fontSize: 23,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildChecklistProgress(int completed, double progress) {
+    final total = checklist.length;
+    final pending = total - completed;
+
+    final percentage = (progress * 100).round();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.deepPurple.shade50,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.deepPurple.shade100),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  t(
+                    'Checklist progress',
+                    'Checklistenfortschritt',
+                    'تقدم قائمة المهام',
+                  ),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              Text(
+                '$percentage%',
+                style: TextStyle(
+                  fontSize: 25,
+                  fontWeight: FontWeight.bold,
+                  color: progress == 1.0
+                      ? Colors.green.shade700
+                      : Colors.deepPurple,
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          LinearProgressIndicator(
+            value: progress,
+            minHeight: 12,
+            borderRadius: BorderRadius.circular(12),
+            backgroundColor: Colors.deepPurple.shade100,
+            color: progress == 1.0 ? Colors.green : Colors.deepPurple,
+          ),
+
+          const SizedBox(height: 12),
+
+          Text(
+            t(
+              '$completed of $total tasks completed',
+              '$completed von $total Aufgaben erledigt',
+              'تم إنجاز $completed من أصل $total مهمة',
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              checklistCounter(
+                t('Total', 'Gesamt', 'الإجمالي'),
+                total,
+                Colors.deepPurple,
+                Icons.list_alt,
+              ),
+              checklistCounter(
+                t('Completed', 'Erledigt', 'مكتملة'),
+                completed,
+                Colors.green.shade700,
+                Icons.check_circle_outline,
+              ),
+              checklistCounter(
+                t('Pending', 'Offen', 'متبقية'),
+                pending,
+                Colors.orange.shade800,
+                Icons.pending_actions,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildChecklistItem(dynamic item) {
+    final id = itemId(item);
+    final completed = isCompleted(item);
+
+    final description = item is Map
+        ? (item['description'] ?? '').toString()
+        : '';
+
+    final updating = id != null && updatingItemIds.contains(id);
+
+    return Card(
+      key: id == null ? null : ValueKey(id),
+      elevation: 0,
+      color: completed ? Colors.green.shade50 : Colors.white,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(
+          color: completed ? Colors.green.shade200 : Colors.grey.shade300,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Checkbox(
+                  value: completed,
+                  activeColor: Colors.green,
+                  onChanged: id == null || checklistBusy || fileActionsBusy
+                      ? null
+                      : (value) {
+                          toggleChecklist(item, value ?? false);
+                        },
+                ),
+
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        contentText(getChecklistTitle(item)),
+
+                        if (description.trim().isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          contentText(description),
+                        ],
+
+                        const SizedBox(height: 10),
+
+                        Row(
+                          children: [
+                            Icon(
+                              completed ? Icons.check_circle : Icons.schedule,
+                              size: 17,
+                              color: completed ? Colors.green : Colors.orange,
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                completed
+                                    ? t(
+                                        'Marked complete',
+                                        'Als erledigt markiert',
+                                        'مكتملة يدوياً',
+                                      )
+                                    : t('Pending', 'Offen', 'قيد الإنجاز'),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: completed
+                                      ? Colors.green.shade700
+                                      : Colors.orange.shade800,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                if (updating)
+                  const Padding(
+                    padding: EdgeInsets.all(8),
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+              ],
+            ),
+
+            const SizedBox(height: 8),
+
+            requirementEvidence(item),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ==========================================
+  // REQUIREMENT EVIDENCE DISPLAY
+  // ==========================================
+
+  Widget requirementEvidence(dynamic item) {
+    if (item is! Map) {
+      return const SizedBox.shrink();
+    }
+
+    final sourcePage = item['source_page'];
+    final sourceEvidence = (item['source_evidence'] ?? '').toString();
+
+    final verified = item['evidence_verified'];
+
+    final hasEvidence =
+        sourcePage is int && sourcePage > 0 && sourceEvidence.trim().isNotEmpty;
+
+    final priority = (item['priority'] ?? '').toString().toLowerCase();
+
+    String priorityLabel = '';
+    Color priorityColor = Colors.grey;
+
+    switch (priority) {
+      case 'high':
+        priorityLabel = t('High priority', 'Hohe Priorität', 'أولوية عالية');
+        priorityColor = Colors.red.shade700;
+        break;
+
+      case 'medium':
+        priorityLabel = t(
+          'Medium priority',
+          'Mittlere Priorität',
+          'أولوية متوسطة',
+        );
+        priorityColor = Colors.orange.shade800;
+        break;
+
+      case 'low':
+        priorityLabel = t(
+          'Low priority',
+          'Niedrige Priorität',
+          'أولوية منخفضة',
+        );
+        priorityColor = Colors.blueGrey;
+        break;
+    }
+
+    final isVerified = verified == true && hasEvidence;
+
+    final isLegacy =
+        verified == null && sourcePage == null && sourceEvidence.trim().isEmpty;
+
+    final Color evidenceColor = isVerified
+        ? Colors.green.shade700
+        : isLegacy
+        ? Colors.grey.shade700
+        : Colors.orange.shade800;
+
+    final String evidenceLabel = isVerified
+        ? t(
+            'Evidence matched',
+            'Textbeleg bestätigt',
+            'تمت مطابقة الدليل النصي',
+          )
+        : isLegacy
+        ? t(
+            'Legacy requirement — no evidence available',
+            'Bestehende Anforderung ohne Textbeleg',
+            'متطلب قديم — لا يتوفر دليل نصي',
+          )
+        : t(
+            'Evidence not verified',
+            'Textbeleg nicht bestätigt',
+            'الدليل غير متحقق منه',
+          );
+
+    final IconData evidenceIcon = isVerified
+        ? Icons.check_circle_outline
+        : isLegacy
+        ? Icons.info_outline
+        : Icons.warning_amber_rounded;
+
+    final fileId = item['file_id'];
+
+    String? sourceFileName;
+
+    for (final file in files) {
+      if (fileId != null && itemId(file) == fileId) {
+        sourceFileName = fileName(file);
+        break;
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (priorityLabel.isNotEmpty) ...[
+          const SizedBox(height: 10),
+
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: priorityColor.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              priorityLabel,
+              style: TextStyle(
+                color: priorityColor,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+
+        const SizedBox(height: 10),
+        const Divider(),
+
+        if (sourceFileName != null) ...[
+          Row(
+            children: [
+              const Icon(
+                Icons.picture_as_pdf_outlined,
+                size: 18,
+                color: Colors.deepPurple,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  sourceFileName,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+        ],
+
+        if (sourcePage is int && sourcePage > 0) ...[
+          Row(
+            children: [
+              const Icon(
+                Icons.description_outlined,
+                size: 18,
+                color: Colors.deepPurple,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '${t("Page", "Seite", "الصفحة")} $sourcePage',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+        ],
+
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(evidenceIcon, color: evidenceColor, size: 18),
+
+            const SizedBox(width: 8),
+
+            Expanded(
+              child: Text(
+                evidenceLabel,
+                style: TextStyle(
+                  color: evidenceColor,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+
+        if (sourceEvidence.trim().isNotEmpty) ...[
+          const SizedBox(height: 8),
+
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            childrenPadding: const EdgeInsets.only(bottom: 8),
+            leading: const Icon(
+              Icons.menu_book_outlined,
+              color: Colors.deepPurple,
+              size: 20,
+            ),
+            title: Text(
+              t(
+                'Show original evidence',
+                'Originalbeleg anzeigen',
+                'عرض الدليل الأصلي',
+              ),
+              style: const TextStyle(fontSize: 14),
+            ),
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.deepPurple.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      t(
+                        'Original PDF text',
+                        'Originaler PDF-Text',
+                        'النص الأصلي من PDF',
+                      ),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.deepPurple,
+                      ),
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    SelectionArea(
+                      child: Text(
+                        sourceEvidence.toString(),
+                        style: const TextStyle(
+                          fontSize: 14.0,
+                          height: 1.5,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
   }
 
   // ==========================================
@@ -1503,6 +2490,8 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                     onChanged: (id) {
                       setState(() {
                         selectedFileId = id;
+                        analysisSummary = null;
+                        analyzedFileId = null;
                       });
                     },
                   ),
@@ -1537,6 +2526,13 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
 
                   const SizedBox(height: 16),
 
+                  if (isAnalyzing) ...[
+                    const LinearProgressIndicator(),
+                    const SizedBox(height: 16),
+                  ],
+
+                  buildAnalysisSummary(),
+
                   loadingOrError(
                     loading: isLoadingRequirements,
                     error: requirementsError,
@@ -1565,19 +2561,51 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                                   : '';
 
                               return Card(
-                                child: ListTile(
-                                  leading: CircleAvatar(
-                                    child: Text('${entry.key + 1}'),
+                                margin: const EdgeInsets.only(bottom: 12),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(14),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          CircleAvatar(
+                                            backgroundColor: Colors.deepPurple,
+                                            foregroundColor: Colors.white,
+                                            child: Text('${entry.key + 1}'),
+                                          ),
+
+                                          const SizedBox(width: 12),
+
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                contentText(
+                                                  title,
+                                                  style: const TextStyle(
+                                                    fontWeight: FontWeight.w600,
+                                                    fontSize: 16,
+                                                  ),
+                                                ),
+
+                                                if (description.isNotEmpty) ...[
+                                                  const SizedBox(height: 6),
+                                                  contentText(description),
+                                                ],
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+
+                                      requirementEvidence(item),
+                                    ],
                                   ),
-                                  title: contentText(
-                                    title,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  subtitle: description.isEmpty
-                                      ? null
-                                      : contentText(description),
                                 ),
                               );
                             }).toList(),
@@ -1588,19 +2616,46 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
             ),
 
             // ==================================
-            // CHECKLIST
+            // SMART CHECKLIST V2
             // ==================================
             section(
-              title: t('Checklist', 'Checkliste', 'قائمة المهام'),
+              title: t(
+                'Smart Checklist',
+                'Intelligente Checkliste',
+                'قائمة المهام الذكية',
+              ),
               icon: Icons.checklist,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Text(
+                    t(
+                      'Organize your requirements and track your progress.',
+                      'Organisiere deine Anforderungen und verfolge deinen Fortschritt.',
+                      'نظّم متطلبات مشروعك وتابع تقدمك في إنجاز المهام.',
+                    ),
+                  ),
+
+                  const SizedBox(height: 12),
+
                   ElevatedButton.icon(
-                    onPressed: isGeneratingChecklist || requirements.isEmpty
+                    onPressed:
+                        checklistBusy ||
+                            fileActionsBusy ||
+                            isLoadingRequirements ||
+                            requirementsError != null ||
+                            requirements.isEmpty
                         ? null
                         : generateChecklist,
-                    icon: const Icon(Icons.playlist_add),
+
+                    icon: isGeneratingChecklist
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.playlist_add),
+
                     label: Text(
                       isGeneratingChecklist
                           ? t(
@@ -1608,27 +2663,106 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                               'Wird erstellt...',
                               'جارٍ الإنشاء...',
                             )
-                          : t(
+                          : checklist.isEmpty
+                          ? t(
                               'Generate Checklist',
                               'Checkliste erstellen',
                               'إنشاء قائمة المهام',
+                            )
+                          : t(
+                              'Update Checklist',
+                              'Checkliste aktualisieren',
+                              'تحديث قائمة المهام',
                             ),
                     ),
                   ),
 
                   const SizedBox(height: 16),
 
-                  if (checklist.isNotEmpty) ...[
-                    Text(
-                      '$completed / ${checklist.length} '
-                      '${t("completed", "erledigt", "مكتمل")}',
+                  if (checklist.isNotEmpty && checklistError == null) ...[
+                    buildChecklistProgress(completed, progress),
+
+                    const SizedBox(height: 16),
+
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(
+                            Icons.info_outline,
+                            color: Colors.blue,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              t(
+                                'Manual completion is not an AI verification of your submission.',
+                                'Die manuelle Erledigung ist keine KI-Prüfung deiner Abgabe.',
+                                'تحديد المهمة كمكتملة يدوياً لا يعني أن الذكاء الاصطناعي تحقق من تنفيذها.',
+                              ),
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    const SizedBox(height: 8),
-                    LinearProgressIndicator(
-                      value: progress,
-                      minHeight: 8,
-                      borderRadius: BorderRadius.circular(8),
+
+                    const SizedBox(height: 16),
+
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        checklistFilterChip(
+                          'all',
+                          t('All', 'Alle', 'الكل'),
+                          checklist.length,
+                        ),
+                        checklistFilterChip(
+                          'pending',
+                          t('Pending', 'Offen', 'المتبقية'),
+                          checklist.length - completed,
+                        ),
+                        checklistFilterChip(
+                          'completed',
+                          t('Completed', 'Erledigt', 'المكتملة'),
+                          completed,
+                        ),
+                      ],
                     ),
+
+                    const SizedBox(height: 16),
+
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.sort,
+                          size: 18,
+                          color: Colors.deepPurple,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            t(
+                              'Sorted by priority',
+                              'Nach Priorität sortiert',
+                              'مرتبة حسب الأولوية',
+                            ),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.deepPurple,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+
                     const SizedBox(height: 12),
                   ],
 
@@ -1643,23 +2777,23 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                               'لم يتم إنشاء قائمة المهام بعد.',
                             ),
                           )
+                        : filteredChecklist.isEmpty
+                        ? Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Center(
+                              child: Text(
+                                t(
+                                  'No matching tasks.',
+                                  'Keine passenden Aufgaben.',
+                                  'لا توجد مهام مطابقة للفلتر.',
+                                ),
+                              ),
+                            ),
+                          )
                         : Column(
-                            children: checklist.map((item) {
-                              final id = itemId(item);
-
-                              return CheckboxListTile(
-                                value: isCompleted(item),
-                                controlAffinity:
-                                    ListTileControlAffinity.leading,
-                                title: contentText(getChecklistTitle(item)),
-                                onChanged:
-                                    id == null || updatingItemIds.contains(id)
-                                    ? null
-                                    : (value) {
-                                        toggleChecklist(item, value ?? false);
-                                      },
-                              );
-                            }).toList(),
+                            children: filteredChecklist
+                                .map(buildChecklistItem)
+                                .toList(),
                           ),
                   ),
                 ],
@@ -1880,8 +3014,731 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
   // FINAL REPORT DISPLAY
   // ==========================================
 
+  String _submissionReportFilter = 'all';
+
+  // ==========================================
+  // SMART REPORT HELPERS
+  // ==========================================
+
+  Map<String, dynamic> reportMap(dynamic value) {
+    if (value is Map) {
+      return Map<String, dynamic>.from(value);
+    }
+
+    return <String, dynamic>{};
+  }
+
+  int reportInt(dynamic value) {
+    if (value is num) {
+      return value.toInt();
+    }
+
+    return int.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
+  double reportDouble(dynamic value) {
+    final number = value is num
+        ? value.toDouble()
+        : double.tryParse(value?.toString() ?? '') ?? 0.0;
+
+    if (!number.isFinite) return 0.0;
+
+    return number.clamp(0.0, 100.0).toDouble();
+  }
+
+  String reportStatusLabel(String status) {
+    switch (status) {
+      case 'fulfilled':
+        return t('Fulfilled', 'Erfüllt', 'مكتمل');
+
+      case 'partially_fulfilled':
+        return t('Partially fulfilled', 'Teilweise erfüllt', 'مكتمل جزئياً');
+
+      case 'missing':
+        return t('Missing', 'Fehlend', 'ناقص');
+
+      case 'unclear':
+        return t('Unclear', 'Unklar', 'غير واضح');
+
+      default:
+        return t('Unknown', 'Unbekannt', 'غير معروف');
+    }
+  }
+
+  Color reportStatusColor(String status) {
+    switch (status) {
+      case 'fulfilled':
+        return Colors.green.shade700;
+
+      case 'partially_fulfilled':
+        return Colors.orange.shade800;
+
+      case 'missing':
+        return Colors.red.shade700;
+
+      default:
+        return Colors.blueGrey;
+    }
+  }
+
+  IconData reportStatusIcon(String status) {
+    switch (status) {
+      case 'fulfilled':
+        return Icons.check_circle_outline;
+
+      case 'partially_fulfilled':
+        return Icons.timelapse;
+
+      case 'missing':
+        return Icons.cancel_outlined;
+
+      default:
+        return Icons.help_outline;
+    }
+  }
+
+  // ==========================================
+  // REPORT PROGRESS
+  // ==========================================
+
+  Widget reportProgress({
+    required String title,
+    required double percentage,
+    required String description,
+    required Color color,
+  }) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            SizedBox(
+              width: 100,
+              height: 100,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  SizedBox(
+                    width: 100,
+                    height: 100,
+                    child: CircularProgressIndicator(
+                      value: percentage / 100.0,
+                      strokeWidth: 9.0,
+                      color: color,
+                      backgroundColor: color.withValues(alpha: 0.12),
+                    ),
+                  ),
+                  Text(
+                    '${percentage.toStringAsFixed(1)}%',
+                    style: TextStyle(
+                      fontSize: 22.0,
+                      fontWeight: FontWeight.bold,
+                      color: color,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 15.0,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              description,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12.0),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ==========================================
+  // REPORT STATUS CARD
+  // ==========================================
+
+  Widget reportStatusCard(String status, int count) {
+    final color = reportStatusColor(status);
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(reportStatusIcon(status), color: color),
+          const SizedBox(height: 8),
+          Text(
+            count.toString(),
+            style: TextStyle(
+              color: color,
+              fontSize: 25.0,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            reportStatusLabel(status),
+            style: const TextStyle(fontWeight: FontWeight.w500),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==========================================
+  // REPORT NOTICE
+  // ==========================================
+
+  Widget reportNotice(String message, {bool warning = true}) {
+    final color = warning ? Colors.orange.shade800 : Colors.blue.shade700;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            warning ? Icons.warning_amber_rounded : Icons.info_outline,
+            color: color,
+          ),
+          const SizedBox(width: 10),
+          Expanded(child: Text(message)),
+        ],
+      ),
+    );
+  }
+
+  // ==========================================
+  // SUBMISSION EVIDENCE
+  // ==========================================
+
+  Widget reportEvidence(Map<String, dynamic> result) {
+    final page = reportInt(result['source_page']);
+
+    final evidence = result['source_evidence']?.toString() ?? '';
+
+    final verified = result['evidence_verified'];
+
+    if (evidence.trim().isEmpty || page <= 0) {
+      return reportNotice(
+        t(
+          'No source quotation available.',
+          'Kein Quellenzitat verfügbar.',
+          'لا يوجد اقتباس متاح من الملف.',
+        ),
+        warning: false,
+      );
+    }
+
+    final color = verified == true
+        ? Colors.green.shade700
+        : Colors.orange.shade800;
+
+    final verificationLabel = verified == true
+        ? t(
+            'Quotation verified in source text',
+            'Zitat im Quelltext bestätigt',
+            'تم التحقق من وجود الاقتباس في النص',
+          )
+        : verified == false
+        ? t(
+            'Unverified quotation',
+            'Nicht bestätigtes Zitat',
+            'اقتباس غير متحقق منه',
+          )
+        : t(
+            'Verification unavailable',
+            'Überprüfung nicht verfügbar',
+            'التحقق غير متاح',
+          );
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                verified == true ? Icons.verified_outlined : Icons.info_outline,
+                color: color,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  verificationLabel,
+                  style: TextStyle(color: color, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '${t('Page', 'Seite', 'الصفحة')} $page',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+
+          // Preserve the original source quotation.
+          SelectableText(
+            evidence,
+            style: const TextStyle(fontSize: 14.0, height: 1.5),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==========================================
+  // INDIVIDUAL REQUIREMENT RESULT
+  // ==========================================
+
+  Widget reportResultCard(Map<String, dynamic> result) {
+    final status = result['status']?.toString() ?? 'unknown';
+
+    final requirementId = result['requirement_id']?.toString() ?? '?';
+
+    final feedback = result['feedback']?.toString() ?? '';
+
+    final improvement = result['suggested_improvement']?.toString() ?? '';
+
+    final version = result['pipeline_version']?.toString() ?? '';
+
+    final color = reportStatusColor(status);
+
+    return Card(
+      key: ValueKey('report-${result['file_id']}-${result['id']}'),
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ExpansionTile(
+        leading: Icon(reportStatusIcon(status), color: color),
+        title: Text(
+          '${t('Requirement', 'Anforderung', 'المتطلب')} #$requirementId',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        subtitle: Text(
+          reportStatusLabel(status),
+          style: TextStyle(color: color),
+        ),
+        childrenPadding: const EdgeInsets.all(16),
+        expandedCrossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            t('AI Feedback', 'KI-Feedback', 'ملاحظات الذكاء الاصطناعي'),
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15.0),
+          ),
+          const SizedBox(height: 8),
+
+          if (feedback.trim().isNotEmpty) contentText(feedback),
+
+          const SizedBox(height: 16),
+
+          Text(
+            t('Source Evidence', 'Quellennachweis', 'الدليل من الملف'),
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15.0),
+          ),
+          const SizedBox(height: 8),
+
+          reportEvidence(result),
+
+          if (improvement.trim().isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                const Icon(Icons.lightbulb_outline, color: Colors.orange),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    t(
+                      'Suggested improvement',
+                      'Verbesserungsvorschlag',
+                      'اقتراح التحسين',
+                    ),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            contentText(improvement),
+          ],
+
+          if (version.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text(
+              '${t('Pipeline version', 'Pipeline-Version', 'إصدار التقييم')}: $version',
+              style: const TextStyle(fontSize: 12.0),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // ==========================================
+  // SMART SUBMISSION REPORT
+  // ==========================================
+
   Widget buildReport(dynamic report) {
-    return buildReportValue(report);
+    if (report is! Map) {
+      return buildReportValue(report);
+    }
+
+    final data = reportMap(report);
+
+    final summary = reportMap(data['summary']);
+
+    final evidenceSummary = reportMap(data['evidence_summary']);
+
+    final evaluation = reportMap(data['evaluation']);
+
+    if (summary.isEmpty) {
+      return buildReportValue(report);
+    }
+
+    final total = reportInt(summary['total_requirements']);
+
+    final fulfilled = reportInt(summary['fulfilled']);
+
+    final partial = reportInt(summary['partially_fulfilled']);
+
+    final missing = reportInt(summary['missing']);
+
+    final unclear = reportInt(summary['unclear']);
+
+    final unknown = reportInt(summary['unknown_status_count']);
+
+    final completion = reportDouble(summary['completion_percentage']);
+
+    final coverage = reportDouble(
+      evidenceSummary['evidence_coverage_percentage'],
+    );
+
+    final verifiedCount = reportInt(evidenceSummary['verified_evidence']);
+
+    final unverifiedCount = reportInt(evidenceSummary['unverified_evidence']);
+
+    final unavailableCount = reportInt(
+      evidenceSummary['evidence_not_available'],
+    );
+
+    final missingEvidence = reportInt(
+      evidenceSummary['missing_required_evidence'],
+    );
+
+    final legacyCount = reportInt(evaluation['legacy_results']);
+
+    final isLegacy =
+        evaluation['is_legacy_report'] == true || evidenceSummary.isEmpty;
+
+    final reviewRequired =
+        evaluation['review_required'] == true ||
+        isLegacy ||
+        unclear > 0 ||
+        unknown > 0 ||
+        missingEvidence > 0 ||
+        unverifiedCount > 0 ||
+        legacyCount > 0;
+
+    final rawVersions = evaluation['pipeline_versions'];
+
+    final versions = rawVersions is List
+        ? rawVersions.map((item) => item.toString()).join(', ')
+        : '';
+
+    final rawDetails = data['details'];
+
+    final details = rawDetails is List
+        ? rawDetails.whereType<Map>().map((item) => reportMap(item)).toList()
+        : <Map<String, dynamic>>[];
+
+    final knownStatuses = [
+      'fulfilled',
+      'partially_fulfilled',
+      'missing',
+      'unclear',
+    ];
+
+    final filteredDetails = details.where((item) {
+      if (_submissionReportFilter == 'all') {
+        return true;
+      }
+
+      final status = item['status']?.toString();
+
+      if (_submissionReportFilter == 'unknown') {
+        return !knownStatuses.contains(status);
+      }
+
+      return status == _submissionReportFilter;
+    }).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          t(
+            'Smart Submission Report',
+            'Intelligenter Abschlussbericht',
+            'تقرير التسليم الذكي',
+          ),
+          style: const TextStyle(fontSize: 21.0, fontWeight: FontWeight.bold),
+        ),
+
+        const SizedBox(height: 8),
+
+        Text(data['submission_filename']?.toString() ?? ''),
+
+        const SizedBox(height: 16),
+
+        // RESPONSIVE PROGRESS CARDS
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final completionCard = reportProgress(
+              title: t(
+                'Full completion',
+                'Vollständig erfüllt',
+                'الإنجاز الكامل',
+              ),
+              percentage: completion,
+              description: t(
+                '$fulfilled of $total requirements',
+                '$fulfilled von $total Anforderungen',
+                '$fulfilled من أصل $total متطلبات',
+              ),
+              color: Colors.green.shade700,
+            );
+
+            final evidenceCard = reportProgress(
+              title: t(
+                'Evidence coverage',
+                'Nachweisabdeckung',
+                'تغطية الأدلة',
+              ),
+              percentage: coverage,
+              description: t(
+                '$verifiedCount of $total results with verified quotations',
+                '$verifiedCount von $total Ergebnissen mit bestätigten Zitaten',
+                '$verifiedCount من أصل $total نتائج باقتباسات متحقق منها',
+              ),
+              color: Colors.blue.shade700,
+            );
+
+            final cards = [
+              completionCard,
+              if (!isLegacy || evidenceSummary.isNotEmpty) evidenceCard,
+            ];
+
+            if (constraints.maxWidth < 420) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: cards,
+              );
+            }
+
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: cards.map((card) {
+                return Expanded(child: card);
+              }).toList(),
+            );
+          },
+        ),
+
+        const SizedBox(height: 16),
+
+        // STATUS STATISTICS
+        Row(
+          children: [
+            Expanded(child: reportStatusCard('fulfilled', fulfilled)),
+            const SizedBox(width: 10),
+            Expanded(child: reportStatusCard('partially_fulfilled', partial)),
+          ],
+        ),
+
+        const SizedBox(height: 10),
+
+        Row(
+          children: [
+            Expanded(child: reportStatusCard('missing', missing)),
+            const SizedBox(width: 10),
+            Expanded(child: reportStatusCard('unclear', unclear)),
+          ],
+        ),
+
+        if (unknown > 0) ...[
+          const SizedBox(height: 10),
+          reportStatusCard('unknown', unknown),
+        ],
+
+        const SizedBox(height: 16),
+
+        // REVIEW AND LEGACY NOTICES
+        if (reviewRequired)
+          reportNotice(
+            t(
+              'Human review required. Some results need additional verification.',
+              'Menschliche Überprüfung erforderlich. Einige Ergebnisse müssen zusätzlich geprüft werden.',
+              'المراجعة البشرية مطلوبة. بعض النتائج تحتاج إلى تحقق إضافي.',
+            ),
+          ),
+
+        if (isLegacy)
+          reportNotice(
+            t(
+              'Historical report. Evidence verification was not available when this report was generated.',
+              'Historischer Bericht. Bei seiner Erstellung war keine Nachweisprüfung verfügbar.',
+              'تقرير قديم. لم يكن التحقق من الأدلة متاحاً عند إنشائه.',
+            ),
+            warning: false,
+          ),
+
+        if (missingEvidence > 0)
+          reportNotice(
+            t(
+              '$missingEvidence results lack required verified evidence.',
+              '$missingEvidence Ergebnissen fehlen erforderliche bestätigte Nachweise.',
+              '$missingEvidence نتائج تفتقر إلى الأدلة المطلوبة المتحقق منها.',
+            ),
+          ),
+
+        if (unverifiedCount > 0)
+          reportNotice(
+            t(
+              '$unverifiedCount results contain unverified evidence.',
+              '$unverifiedCount Ergebnisse enthalten unbestätigte Nachweise.',
+              '$unverifiedCount نتائج تحتوي على أدلة غير متحقق منها.',
+            ),
+          ),
+
+        if (unavailableCount > 0 && !isLegacy)
+          reportNotice(
+            t(
+              '$unavailableCount results have no available evidence verification.',
+              'Für $unavailableCount Ergebnisse ist keine Nachweisprüfung verfügbar.',
+              '$unavailableCount نتائج لا يتوفر لها تحقق من الأدلة.',
+            ),
+            warning: false,
+          ),
+
+        reportNotice(
+          t(
+            'AI-assisted evaluation. Verified quotations confirm text presence, not the correctness of the entire assessment.',
+            'KI-gestützte Bewertung. Bestätigte Zitate belegen das Vorhandensein im Text, nicht die Richtigkeit der gesamten Bewertung.',
+            'تقييم بمساعدة الذكاء الاصطناعي. التحقق من الاقتباسات يؤكد وجودها في النص، وليس صحة التقييم بالكامل.',
+          ),
+          warning: false,
+        ),
+
+        const SizedBox(height: 16),
+
+        // FILTER
+        Text(
+          t('Detailed results', 'Detaillierte Ergebnisse', 'النتائج التفصيلية'),
+          style: const TextStyle(fontSize: 18.0, fontWeight: FontWeight.bold),
+        ),
+
+        const SizedBox(height: 12),
+
+        DropdownButtonFormField<String>(
+          initialValue: _submissionReportFilter,
+          isExpanded: true,
+          decoration: InputDecoration(
+            labelText: t(
+              'Filter by status',
+              'Nach Status filtern',
+              'التصفية حسب الحالة',
+            ),
+            border: const OutlineInputBorder(),
+          ),
+          items: [
+            DropdownMenuItem(
+              value: 'all',
+              child: Text(t('All', 'Alle', 'الكل')),
+            ),
+            ...[
+              'fulfilled',
+              'partially_fulfilled',
+              'missing',
+              'unclear',
+              'unknown',
+            ].map((status) {
+              return DropdownMenuItem(
+                value: status,
+                child: Text(reportStatusLabel(status)),
+              );
+            }),
+          ],
+          onChanged: (value) {
+            if (value == null) return;
+
+            setState(() {
+              _submissionReportFilter = value;
+            });
+          },
+        ),
+
+        const SizedBox(height: 12),
+
+        Text(
+          t(
+            '${filteredDetails.length} of ${details.length} results',
+            '${filteredDetails.length} von ${details.length} Ergebnissen',
+            '${filteredDetails.length} من أصل ${details.length} نتائج',
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        if (filteredDetails.isEmpty)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              t(
+                'No matching results.',
+                'Keine passenden Ergebnisse.',
+                'لا توجد نتائج مطابقة.',
+              ),
+            ),
+          ),
+
+        ...filteredDetails.map(reportResultCard),
+
+        if (versions.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Text(
+            '${t('Pipeline versions', 'Pipeline-Versionen', 'إصدارات التقييم')}: $versions',
+            style: const TextStyle(fontSize: 12.0),
+          ),
+        ],
+      ],
+    );
   }
 
   Widget buildReportValue(dynamic value) {
